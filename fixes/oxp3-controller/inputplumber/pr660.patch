@@ -1,0 +1,153 @@
+From 1f2b129ab5e6ab314a9cc7af546b3119c95099da Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <7153954+Grippy98@users.noreply.github.com>
+Date: Sun, 23 Aug 2026 14:03:10 -0500
+Subject: [PATCH] feat(onexplayer): add ONEXPLAYER 3 support
+
+Add the DMI autostart match, composite device profile, and extra-button capability mappings for the ONEXPLAYER 3.
+
+The profile and mappings were generated with OpenAI Codex assistance, then reviewed and verified interactively on ONEXPLAYER 3 hardware using evtest and InputPlumber. Validation included the full test suite, clippy, YAML parsing, and the autostart configuration test.
+
+Co-developed-by: OpenAI Codex
+---
+ .../hwdb.d/60-inputplumber-autostart.hwdb     |  2 +
+ .../capability_maps/onexplayer_type9.yaml     | 40 +++++++++++
+ .../inputplumber/devices/50-onexplayer_3.yaml | 70 +++++++++++++++++++
+ 3 files changed, 112 insertions(+)
+ create mode 100644 rootfs/usr/share/inputplumber/capability_maps/onexplayer_type9.yaml
+ create mode 100644 rootfs/usr/share/inputplumber/devices/50-onexplayer_3.yaml
+
+diff --git a/rootfs/usr/lib/udev/hwdb.d/60-inputplumber-autostart.hwdb b/rootfs/usr/lib/udev/hwdb.d/60-inputplumber-autostart.hwdb
+index 0f47149b..0f68466a 100644
+--- a/rootfs/usr/lib/udev/hwdb.d/60-inputplumber-autostart.hwdb
++++ b/rootfs/usr/lib/udev/hwdb.d/60-inputplumber-autostart.hwdb
+@@ -93,6 +93,8 @@ dmi:*svnONE-NETBOOK:pnONEXPLAYER2PROARP23:*
+ dmi:*svnONE-NETBOOK:pnONEXPLAYER2PROARP23H:*
+ dmi:*svnONE-NETBOOK:pnONEXPLAYER2PROARP23P:*
+ dmi:*svnONE-NETBOOK:pnONEXPLAYER2PROARP23EVA-01:*
++# OneXPlayer 3
++dmi:*svnONE-NETBOOK:pnONEXPLAYER3:*
+ # OneXPlayer Mini A07
+ dmi:*svnONE-NETBOOK:pnONEXPLAYERminiA07:*
+ # OneXPlayer Mini Pro
+diff --git a/rootfs/usr/share/inputplumber/capability_maps/onexplayer_type9.yaml b/rootfs/usr/share/inputplumber/capability_maps/onexplayer_type9.yaml
+new file mode 100644
+index 00000000..58c3c0a5
+--- /dev/null
++++ b/rootfs/usr/share/inputplumber/capability_maps/onexplayer_type9.yaml
+@@ -0,0 +1,40 @@
++# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/capability_map_v1.json
++# Schema version number
++version: 1
++
++# The type of configuration schema
++kind: CapabilityMap
++
++# Name for the device event map
++name: OneXPlayer Type 9
++
++# Unique identifier of the capability mapping
++id: oxp9
++
++# Verification (ONEXPLAYER 3):
++#   ONEX: evtest reports LeftCtrl+LeftAlt+LeftMeta on HID 1a86:fe00.
++#   Keyboard: evtest reports LeftCtrl+LeftMeta+O on HID 1a86:fe00.
++#   Home: no evdev event; OXP HID interface 2 reports vendor button ID 0x24,
++#     which the OXP HID driver translates to gamepad Keyboard.
++
++# List of mapped events that are activated by a specific set of activation keys.
++mapping:
++  - name: ONEX
++    source_events:
++      - keyboard: KeyLeftCtrl
++      - keyboard: KeyLeftAlt
++      - keyboard: KeyLeftMeta
++    target_event:
++      gamepad:
++        button: QuickAccess
++  - name: Keyboard
++    source_events:
++      - keyboard: KeyLeftCtrl
++      - keyboard: KeyLeftMeta
++      - keyboard: KeyO
++    target_event:
++      gamepad:
++        button: QuickAccess2
++
++# List of events to filter from the source devices
++filtered_events: []
+diff --git a/rootfs/usr/share/inputplumber/devices/50-onexplayer_3.yaml b/rootfs/usr/share/inputplumber/devices/50-onexplayer_3.yaml
+new file mode 100644
+index 00000000..c6dce18c
+--- /dev/null
++++ b/rootfs/usr/share/inputplumber/devices/50-onexplayer_3.yaml
+@@ -0,0 +1,70 @@
++# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
++# Schema version number
++version: 1
++
++# The type of configuration schema
++kind: CompositeDevice
++
++# Name of the composite device mapping
++name: ONEXPLAYER 3
++
++# Only allow a single source device per composite device of this type.
++single_source: false
++
++# Only use this profile if *any* of the given matches matches. If this list is
++# empty, then the source devices will *always* be checked.
++# /sys/class/dmi/id/product_name
++matches:
++  - dmi_data:
++      product_name: ONEXPLAYER 3
++      sys_vendor: ONE-NETBOOK
++
++# One or more source devices to combine into a single virtual device. The events
++# from these devices will be watched and translated according to the key map.
++source_devices:
++  - group: gamepad
++    evdev:
++      name: Microsoft X-Box 360 pad
++      phys_path: usb-0000:00:14.0-7/input0
++      handler: event*
++  - group: keyboard
++    evdev:
++      name: HID 1a86:fe00
++      phys_path: usb-0000:00:14.0-5/input0
++      handler: event*
++    events:
++      exclude:
++        - "*"
++      include:
++        - Keyboard:KeyLeftAlt
++        - Keyboard:KeyLeftCtrl
++        - Keyboard:KeyLeftMeta
++        - Keyboard:KeyO
++  - group: gamepad
++    hidraw:
++      vendor_id: 0x1a86
++      product_id: 0xfe00
++      interface_num: 2
++  - group: imu
++    iio:
++      name: bmi260
++      mount_matrix:
++        x: [0, 1, 0]
++        y: [1, 0, 0]
++        z: [0, 0, 1]
++
++# Optional configuration for the composite device
++options:
++  # If true, InputPlumber will automatically try to manage the input device. If
++  # this is false, InputPlumber will not try to manage the device unless an
++  # external service enables management of the device. Defaults to 'false'
++  auto_manage: true
++
++# The target input device(s) that the virtual device profile can use
++target_devices:
++  - xbox-elite
++  - mouse
++  - keyboard
++
++# The ID of a device event mapping in the 'capability_maps' folder
++capability_map_id: oxp9

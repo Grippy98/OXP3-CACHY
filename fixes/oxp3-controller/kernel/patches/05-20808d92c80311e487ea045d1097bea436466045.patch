@@ -1,0 +1,68 @@
+From 20808d92c80311e487ea045d1097bea436466045 Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Thu, 3 Sep 2026 11:59:29 -0500
+Subject: [PATCH] HID: hid-oxp: fix multicolor LED intensity scaling
+
+The controller accepts eight-bit RGB components, but the sub-LED channel
+maximum currently inherits the 0-100 overall brightness range. This
+prevents userspace from selecting channel intensities above 100.
+
+Set each channel maximum to 255 and use the multicolor LED core helper to
+scale components with the requested brightness. This also replaces the
+private truncating calculation with the LED core's rounded calculation.
+
+Keep the existing Gen1 and Gen2 color packet layouts unchanged.
+
+Fixes: 84910c459d65 ("HID: hid-oxp: Add OneXPlayer configuration driver")
+Assisted-by: LLM
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index c3cfa95a7b4937..bee13174e294b6 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -1088,7 +1088,6 @@ static ssize_t oxp_rgb_status_show(void)
+ 
+ static int oxp_rgb_color_set(void)
+ {
+-	u8 max_br = drvdata.led_mc->led_cdev.max_brightness;
+ 	u8 br = drvdata.led_mc->led_cdev.brightness;
+ 	u16 up = get_usage_page(drvdata.hdev);
+ 	u8 green, red, blue;
+@@ -1096,9 +1095,10 @@ static int oxp_rgb_color_set(void)
+ 	u8 *data;
+ 	int i;
+ 
+-	red = br * drvdata.led_mc->subled_info[0].intensity / max_br;
+-	green = br * drvdata.led_mc->subled_info[1].intensity / max_br;
+-	blue = br * drvdata.led_mc->subled_info[2].intensity / max_br;
++	led_mc_calc_color_components(drvdata.led_mc, br);
++	red = drvdata.led_mc->subled_info[0].brightness;
++	green = drvdata.led_mc->subled_info[1].brightness;
++	blue = drvdata.led_mc->subled_info[2].brightness;
+ 
+ 	switch (up) {
+ 	case GEN1_USAGE_PAGE:
+@@ -1383,16 +1383,19 @@ static struct mc_subled oxp_rgb_subled_info[] = {
+ 	{
+ 		.color_index = LED_COLOR_ID_RED,
+ 		.intensity = 0x24,
++		.max_intensity = 0xff,
+ 		.channel = 0x1,
+ 	},
+ 	{
+ 		.color_index = LED_COLOR_ID_GREEN,
+ 		.intensity = 0x22,
++		.max_intensity = 0xff,
+ 		.channel = 0x2,
+ 	},
+ 	{
+ 		.color_index = LED_COLOR_ID_BLUE,
+ 		.intensity = 0x99,
++		.max_intensity = 0xff,
+ 		.channel = 0x3,
+ 	},
+ };

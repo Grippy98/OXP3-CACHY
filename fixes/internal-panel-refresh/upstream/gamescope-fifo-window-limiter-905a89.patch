@@ -1,0 +1,127 @@
+From 905a89bb81c4da505312361cd5d6e28b5753ebd1 Mon Sep 17 00:00:00 2001
+From: Matthew Schwartz <matthew.schwartz@linux.dev>
+Date: Mon, 17 Aug 2026 02:18:37 -0700
+Subject: [PATCH] steamcompmgr: only pace FIFO commits for windows the limiter
+ covers
+
+The commit-done paths gate FIFO commits on the frame limiter divisor
+but pass a hardcoded true for the per-window limiter policy, while the
+frame callback path consults steamcompmgr_window_should_limit_fps for
+the same decision. The mismatch paces windows the limiter is meant to
+exempt on every backend. On the OpenVR backend it throttles the
+external performance overlay down to the limiter target.
+
+Resolve the window for each commit entry and reuse the helper the frame
+callback path already uses. Steam, overlay and VR scene app windows
+presenting in FIFO are no longer held to the limiter cadence on any
+backend, and xdg windows now get the same VRR pacing the frame callback
+path gives them. The resolved window also replaces the second lookup
+for handle_done_commit, since window sequence numbers are unique.
+---
+ src/steamcompmgr.cpp | 63 ++++++++++++++++++++------------------------
+ 1 file changed, 29 insertions(+), 34 deletions(-)
+
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index bf5426701..4eb457d1c 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -7274,23 +7274,19 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 	// very fast loop yes
+ 	for ( auto& entry : ctx->doneCommits.listCommitsDone )
+ 	{
+-		bool entry_vblank = vblank;
+-
+-		if ( GetBackend()->GetCurrentConnector() && GetBackend()->GetCurrentConnector()->IsVRRActive() )
++		steamcompmgr_win_t *entry_win = nullptr;
++		for ( steamcompmgr_win_t *w = ctx->list; w; w = w->xwayland().next )
+ 		{
+-			for ( steamcompmgr_win_t *w = ctx->list; w; w = w->xwayland().next )
+-			{
+-				if (w->seq != entry.winSeq)
+-					continue;
++			if (w->seq != entry.winSeq)
++				continue;
+ 
+-				entry_vblank = entry_vblank && steamcompmgr_should_vblank_window( true, vblank_idx, w, now );
+-			}
+-		}
+-		else
+-		{
+-			entry_vblank = entry_vblank && steamcompmgr_should_vblank_window( true, vblank_idx );
++			entry_win = w;
++			break;
+ 		}
+ 
++		// Only pace windows the FPS limiter covers.
++		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, vblank_idx, now );
++
+ 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+ 			commits_before_their_time.push_back( entry );
+@@ -7309,16 +7305,10 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 			continue;
+ 		}
+ 
+-		for ( steamcompmgr_win_t *w = ctx->list; w; w = w->xwayland().next )
++		if ( entry_win && handle_done_commit(entry_win, ctx, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime) )
+ 		{
+-			if (w->seq != entry.winSeq)
+-				continue;
+-			if (handle_done_commit(w, ctx, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime))
+-			{
+-				if (entry.fifo)
+-					fifo_win_seqs.insert(entry.winSeq);
+-				break;
+-			}
++			if (entry.fifo)
++				fifo_win_seqs.insert(entry.winSeq);
+ 		}
+ 	}
+ 
+@@ -7343,12 +7333,23 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
+ 
+ 	uint64_t now = get_time_in_nanos();
+ 
+-	vblank = vblank && steamcompmgr_should_vblank_window( true, vblank_idx );
+-
+ 	// very fast loop yes
+ 	for ( auto& entry : g_steamcompmgr_xdg_done_commits.listCommitsDone )
+ 	{
+-		if (entry.fifo && (!vblank || fifo_win_seqs.count(entry.winSeq) > 0))
++		steamcompmgr_win_t *entry_win = nullptr;
++		for (const auto& xdg_win : g_steamcompmgr_xdg_wins)
++		{
++			if (xdg_win->seq != entry.winSeq)
++				continue;
++
++			entry_win = xdg_win.get();
++			break;
++		}
++
++		// Only pace windows the FPS limiter covers.
++		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, vblank_idx, now );
++
++		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+ 			commits_before_their_time.push_back( entry );
+ 			continue;
+@@ -7366,16 +7367,10 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
+ 			break;
+ 		}
+ 
+-		for (const auto& xdg_win : g_steamcompmgr_xdg_wins)
++		if ( entry_win && handle_done_commit(entry_win, nullptr, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime) )
+ 		{
+-			if (xdg_win->seq != entry.winSeq)
+-				continue;
+-			if (handle_done_commit(xdg_win.get(), nullptr, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime))
+-			{
+-				if (entry.fifo)
+-					fifo_win_seqs.insert(entry.winSeq);
+-				break;
+-			}
++			if (entry.fifo)
++				fifo_win_seqs.insert(entry.winSeq);
+ 		}
+ 	}
+ 

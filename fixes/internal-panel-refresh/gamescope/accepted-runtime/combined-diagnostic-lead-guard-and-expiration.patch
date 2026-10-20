@@ -1,0 +1,614 @@
+diff --git a/src/Backends/DRMBackend.cpp b/src/Backends/DRMBackend.cpp
+index 134e19a..6b398b2 100644
+--- a/src/Backends/DRMBackend.cpp
++++ b/src/Backends/DRMBackend.cpp
+@@ -558,8 +558,15 @@ extern bool g_bDebugLayers;
+ struct DRMPresentCtx
+ {
+ 	uint64_t ulPendingFlipCount = 0;
++	uint64_t ulTimingSequence = 0;
++	uint64_t ulTimingSubmitBegin = 0;
++	uint64_t ulTimingBaseCommit = 0;
++	uint32_t uTimingBaseApp = 0;
+ };
+ 
++extern uint64_t g_uCurrentBasePlaneCommitID;
++extern uint32_t g_uCurrentBasePlaneAppID;
++
+ extern gamescope::ConVar<bool> cv_composite_force;
+ extern bool g_bColorSliderInUse;
+ extern bool fadingOut;
+@@ -751,6 +758,7 @@ extern void mangoapp_output_update( uint64_t vblanktime );
+ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, unsigned int crtc_id, void *data)
+ {
+ 	DRMPresentCtx *pCtx = reinterpret_cast<DRMPresentCtx *>( data );
++	const uint64_t ulTimingHandler = pCtx->ulTimingSequence ? get_time_in_nanos() : 0;
+ 
+ 	// Make this const when we move into CDRMBackend.
+ 	GetBackend()->GetCurrentConnector()->PresentationFeedback().m_uCompletedPresents = pCtx->ulPendingFlipCount;
+@@ -783,6 +791,10 @@ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsi
+ 
+ 	g_DRM.uPendingFlipCount--;
+ 	g_DRM.uPendingFlipCount.notify_all();
++	if ( pCtx->ulTimingSequence && gamescope::TakeTimingTraceLine() )
++		drm_log.infof( "timing-trace event=pageflip seq=%lu present=%lu hardware_frame=%u crtc=%u flip_ns=%lu handler_ns=%lu submit_begin_ns=%lu base_app=%u base_commit=%lu",
++			pCtx->ulTimingSequence, pCtx->ulPendingFlipCount, frame, crtc_id, vblanktime, ulTimingHandler,
++			pCtx->ulTimingSubmitBegin, pCtx->uTimingBaseApp, pCtx->ulTimingBaseCommit );
+ 
+ 	mangoapp_output_update( vblanktime );
+ 
+@@ -3520,6 +3532,10 @@ namespace gamescope
+ 			uint64_t ulNow = get_time_in_nanos();
+ 			drm_log.debugf( "CDRMBackend::Present Begin: %lu -> delta: %lu", ulNow, ulNow - s_ulLastTime );
+ 			s_ulLastTime = ulNow;
++			if ( TakeTimingTraceLine() )
++				drm_log.infof( "timing-trace event=present_begin seq=%lu now_ns=%lu base_app=%u base_commit=%lu layers=%u async=%u",
++					TimingTraceSequence(), ulNow, g_uCurrentBasePlaneAppID, g_uCurrentBasePlaneCommitID,
++					unsigned( pFrameInfo->layerCount ), unsigned( bAsync ) );
+ 
+ 			bool bWantsPartialComposite = pFrameInfo->layerCount >= 3 && !kDisablePartialComposition;
+ 
+@@ -3593,6 +3609,7 @@ namespace gamescope
+ 				if ( pFrameInfo->layerCount == 2 )
+ 					m_nLastSingleOverlayZPos = pFrameInfo->layers[1].zpos;
+ 
++				TracePreparedScene( pFrameInfo, false, false );
+ 				return Commit( pFrameInfo );
+ 			}
+ 
+@@ -3758,6 +3775,7 @@ namespace gamescope
+ 				m_bWasPartialCompositing = true;
+ 			}
+ 
++			const FrameInfo_t *pTimingPreparedFrame = &presentCompFrameInfo;
+ 			int ret = drm_prepare( &g_DRM, bAsync, &presentCompFrameInfo );
+ 
+ 			// Happens when we're VT-switched away
+@@ -3775,6 +3793,7 @@ namespace gamescope
+ 				xwm_log.errorf("Failed to prepare 1-layer flip (%s), trying again with previous mode if modeset needed", strerror( -ret ));
+ 
+ 				// Try once again to in case we need to fall back to another mode.
++				pTimingPreparedFrame = &compositeFrameInfo;
+ 				ret = drm_prepare( &g_DRM, bAsync, &compositeFrameInfo );
+ 
+ 				// Happens when we're VT-switched away
+@@ -3797,6 +3816,7 @@ namespace gamescope
+ 				}
+ 			}
+ 
++			TracePreparedScene( pTimingPreparedFrame, true, !bNeedsFullComposite );
+ 			return Commit( &compositeFrameInfo );
+ 		}
+ 
+@@ -3964,6 +3984,22 @@ namespace gamescope
+ 		uint32_t m_uNextPresentCtx = 0;
+ 		DRMPresentCtx m_PresentCtxs[3];
+ 
++		void TracePreparedScene( const FrameInfo_t *pFrameInfo, bool composed, bool partial )
++		{
++			if ( !TakeTimingTraceLine() )
++				return;
++			drm_log.infof( "timing-trace event=prepared_scene seq=%lu now_ns=%lu composed=%u partial=%u layers=%d output_eotf=%u",
++				TimingTraceSequence(), get_time_in_nanos(), unsigned( composed ), unsigned( partial ),
++				pFrameInfo->layerCount, unsigned( pFrameInfo->outputEncodingEOTF ) );
++			for ( int i = 0; i < pFrameInfo->layerCount && TakeTimingTraceLine(); ++i )
++			{
++				const auto &layer = pFrameInfo->layers[i];
++				drm_log.infof( "timing-trace event=prepared_layer seq=%lu index=%d zpos=%d opacity=%.4f width=%u height=%u colorspace=%u color_mgmt=%u output_eotf=%u",
++					TimingTraceSequence(), i, layer.zpos, layer.opacity, layer.tex ? layer.tex->width() : 0u,
++					layer.tex ? layer.tex->height() : 0u, unsigned( layer.colorspace ), unsigned( layer.applyColorMgmt ), unsigned( pFrameInfo->outputEncodingEOTF ) );
++			}
++		}
++
+ 		bool SupportsColorManagement() const
+ 		{
+ 			return drm_supports_color_mgmt( &g_DRM );
+@@ -3998,11 +4034,35 @@ namespace gamescope
+ 			uint32_t uCurrentPresentCtx = m_uNextPresentCtx;
+ 			m_uNextPresentCtx = ( m_uNextPresentCtx + 1 ) % 3;
+ 			m_PresentCtxs[uCurrentPresentCtx].ulPendingFlipCount = GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents;
++			const bool bTimingTraceSubmit = TimingTraceActive();
++			m_PresentCtxs[uCurrentPresentCtx].ulTimingSequence = bTimingTraceSubmit ? TimingTraceSequence() : 0;
++			if ( bTimingTraceSubmit )
++			{
++				m_PresentCtxs[uCurrentPresentCtx].ulTimingBaseCommit = g_uCurrentBasePlaneCommitID;
++				m_PresentCtxs[uCurrentPresentCtx].uTimingBaseApp = g_uCurrentBasePlaneAppID;
++				for ( int i = 0; i < pFrameInfo->layerCount && TakeTimingTraceLine(); ++i )
++				{
++					const auto &layer = pFrameInfo->layers[i];
++					drm_log.infof( "timing-trace event=commit_argument_layer seq=%lu present=%lu index=%d zpos=%d opacity=%.4f width=%u height=%u colorspace=%u color_mgmt=%u output_eotf=%u",
++						m_PresentCtxs[uCurrentPresentCtx].ulTimingSequence, m_PresentCtxs[uCurrentPresentCtx].ulPendingFlipCount,
++						i, layer.zpos, layer.opacity, layer.tex ? layer.tex->width() : 0u, layer.tex ? layer.tex->height() : 0u,
++						unsigned( layer.colorspace ), unsigned( layer.applyColorMgmt ), unsigned( pFrameInfo->outputEncodingEOTF ) );
++				}
++			}
+ 
+ 			drm_log.debugf("flip commit %" PRIu64, (uint64_t)GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents);
+ 			gpuvis_trace_printf( "flip commit %" PRIu64, (uint64_t)GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents );
+ 
++			if ( bTimingTraceSubmit )
++				m_PresentCtxs[uCurrentPresentCtx].ulTimingSubmitBegin = get_time_in_nanos();
+ 			ret = drmModeAtomicCommit(drm->fd, drm->req, drm->flags, &m_PresentCtxs[uCurrentPresentCtx] );
++			const uint64_t ulTimingSubmitReturn = bTimingTraceSubmit ? get_time_in_nanos() : 0;
++			if ( bTimingTraceSubmit && TakeTimingTraceLine() )
++				drm_log.infof( "timing-trace event=submit seq=%lu present=%lu begin_ns=%lu return_ns=%lu span_ns=%lu result=%d flags=%u base_app=%u base_commit=%lu",
++					m_PresentCtxs[uCurrentPresentCtx].ulTimingSequence, m_PresentCtxs[uCurrentPresentCtx].ulPendingFlipCount,
++					m_PresentCtxs[uCurrentPresentCtx].ulTimingSubmitBegin, ulTimingSubmitReturn,
++					ulTimingSubmitReturn - m_PresentCtxs[uCurrentPresentCtx].ulTimingSubmitBegin, ret, drm->flags,
++					m_PresentCtxs[uCurrentPresentCtx].uTimingBaseApp, m_PresentCtxs[uCurrentPresentCtx].ulTimingBaseCommit );
+ 			if ( ret != 0 )
+ 			{
+ 				drm_log.errorf_errno( "flip error" );
+@@ -4102,4 +4162,3 @@ int HackyDRMPresent( const FrameInfo_t *pFrameInfo, bool bAsync )
+ {
+ 	return static_cast<gamescope::CDRMBackend *>( GetBackend() )->Present( pFrameInfo, bAsync );
+ }
+-
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index ff9ae1f..449614c 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -2510,6 +2510,7 @@ paint_all( global_focus_t *pFocus, bool async )
+ {
+ 	if ( !pFocus )
+ 		return;
++	const uint64_t ulTimingPaintBegin = gamescope::TimingTraceActive() ? get_time_in_nanos() : 0;
+ 
+ 	gamescope::IBackendConnector *pConnector = pFocus->pVirtualConnector.get();
+ 	if ( !pConnector )
+@@ -2669,6 +2670,7 @@ paint_all( global_focus_t *pFocus, bool async )
+ 
+ 	// If we have any layers that aren't a cursor or overlay, then we have valid contents for presentation.
+ 	const bool bValidContents = frameInfo.layerCount > 0;
++	const int nTimingExternalLayerBefore = frameInfo.layerCount;
+ 
+   	if (externalOverlay && cv_paint_external_overlay_plane )
+ 	{
+@@ -2682,6 +2684,7 @@ paint_all( global_focus_t *pFocus, bool async )
+ 		}
+ 	}
+ 
++	const int nTimingExternalLayerAfter = frameInfo.layerCount;
+ 	if ( cv_paint_steam_overlay_plane )
+ 	{
+ 		if (overlay && overlay->opacity )
+@@ -2847,6 +2850,26 @@ paint_all( global_focus_t *pFocus, bool async )
+ 		}
+ 	}
+ 
++	if ( ulTimingPaintBegin && gamescope::TakeTimingTraceLine() )
++	{
++		xwm_log.infof( "timing-trace event=scene seq=%lu now_ns=%lu base_app=%u base_commit=%lu external_seq=%lu external_x11=%lu external_app=%u external_commit=%lu external_flag=%u external_opacity=%u external_paint=%u external_layers_added=%d layers=%d hdr_output=%u app_hdr=%u output_eotf=%u",
++			gamescope::TimingTraceSequence(), get_time_in_nanos(), g_uCurrentBasePlaneAppID, g_uCurrentBasePlaneCommitID,
++			externalOverlay ? externalOverlay->seq : 0lu,
++			externalOverlay && externalOverlay->type == steamcompmgr_win_type_t::XWAYLAND ? externalOverlay->xwayland().id : 0lu,
++			externalOverlay ? externalOverlay->appID : 0u, uint64_t( window_last_done_commit_id( externalOverlay ) ),
++			unsigned( externalOverlay && externalOverlay->isExternalOverlay ), externalOverlay ? externalOverlay->opacity : 0u,
++			unsigned( bool( cv_paint_external_overlay_plane ) ), nTimingExternalLayerAfter - nTimingExternalLayerBefore,
++			frameInfo.layerCount, unsigned( g_bOutputHDREnabled ),
++			unsigned( g_HeldCommits[HELD_COMMIT_BASE] && ColorspaceIsHDR( g_HeldCommits[HELD_COMMIT_BASE]->colorspace() ) ), unsigned( frameInfo.outputEncodingEOTF ) );
++		for ( int i = 0; i < frameInfo.layerCount && gamescope::TakeTimingTraceLine(); ++i )
++		{
++			const auto &layer = frameInfo.layers[i];
++			xwm_log.infof( "timing-trace event=scene_layer seq=%lu index=%d zpos=%d opacity=%.4f width=%u height=%u colorspace=%u color_mgmt=%u scale_x=%.4f scale_y=%.4f offset_x=%.4f offset_y=%.4f",
++				gamescope::TimingTraceSequence(), i, layer.zpos, layer.opacity,
++				layer.tex ? layer.tex->width() : 0u, layer.tex ? layer.tex->height() : 0u,
++				unsigned( layer.colorspace ), unsigned( layer.applyColorMgmt ), layer.scale.x, layer.scale.y, layer.offset.x, layer.offset.y );
++		}
++	}
+ 	if ( pConnector && pConnector->Present( &frameInfo, async ) != 0 )
+ 	{
+ 		return;
+@@ -3216,6 +3239,13 @@ paint_all( global_focus_t *pFocus, bool async )
+ 
+ 	gpuvis_trace_end_ctx_printf( paintID, "paint_all" );
+ 	gpuvis_trace_printf( "paint_all %i layers", (int)frameInfo.layerCount );
++	if ( ulTimingPaintBegin && gamescope::TakeTimingTraceLine() )
++	{
++		const uint64_t now = get_time_in_nanos();
++		xwm_log.infof( "timing-trace event=paint seq=%lu begin_ns=%lu end_ns=%lu span_ns=%lu base_app=%u base_commit=%lu layers=%u async=%u",
++			gamescope::TimingTraceSequence(), ulTimingPaintBegin, now, now - ulTimingPaintBegin,
++			g_uCurrentBasePlaneAppID, g_uCurrentBasePlaneCommitID, unsigned( frameInfo.layerCount ), unsigned( async ) );
++	}
+ }
+ 
+ /* Get prop from window
+@@ -5801,6 +5831,15 @@ init_runtime_info()
+ 	update_runtime_info();
+ }
+ 
++static bool timing_trace_window_relevant( steamcompmgr_win_t *w )
++{
++	if ( !w || !gamescope::TimingTraceActive() )
++		return false;
++	const global_focus_t *focus = GetCurrentFocus();
++	return w->isOverlay || w->isExternalOverlay || ( focus && focus->focusWindow == w ) ||
++		( w->appID && steamcompmgr_window_should_limit_fps( w ) );
++}
++
+ static void
+ steamcompmgr_flush_frame_done( steamcompmgr_win_t *w )
+ {
+@@ -5833,6 +5872,10 @@ steamcompmgr_flush_frame_done( steamcompmgr_win_t *w )
+ 		}
+ 
+ 		wlserver_unlock();
++		if ( timing_trace_window_relevant( w ) && gamescope::TakeTimingTraceLine() )
++			xwm_log.infof( "timing-trace event=callback_sent seq=%lu callback_stamp_ns=%lu sent_ns=%lu win_seq=%lu app=%u is_external=%u is_overlay=%u",
++				gamescope::TimingTraceSequence(), w->last_commit_first_latch_time, get_time_in_nanos(), w->seq, w->appID,
++				unsigned( w->isExternalOverlay ), unsigned( w->isOverlay ) );
+ 	}
+ }
+ 
+@@ -5887,7 +5930,13 @@ static bool steamcompmgr_should_vblank_window( steamcompmgr_win_t *w, uint64_t v
+ static void
+ steamcompmgr_latch_frame_done( steamcompmgr_win_t *w, uint64_t vblank_idx, uint64_t now )
+ {
+-	if ( steamcompmgr_should_vblank_window( w, vblank_idx, now ) )
++	const bool admitted = steamcompmgr_should_vblank_window( w, vblank_idx, now );
++	if ( timing_trace_window_relevant( w ) && gamescope::TakeTimingTraceLine() )
++		xwm_log.infof( "timing-trace event=callback_gate seq=%lu now_ns=%lu vblank_idx=%lu win_seq=%lu app=%u policy=%u admitted=%u last_callback_ns=%lu received_done=%u unlocked=%u",
++			gamescope::TimingTraceSequence(), now, vblank_idx, w->seq, w->appID,
++			unsigned( steamcompmgr_window_should_limit_fps( w ) ), unsigned( admitted ), w->last_commit_first_latch_time,
++			unsigned( w->receivedDoneCommit ), unsigned( w->unlockedForFrameCallback ) );
++	if ( admitted )
+ 	{
+ 		w->unlockedForFrameCallback = true;
+ 	}
+@@ -6957,6 +7006,29 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
+ 	return false;
+ }
+ 
++// Resolve an entry only for diagnostic attribution; do not change FIFO policy.
++static void timing_trace_fifo_gate( xwayland_ctx_t *ctx, const CommitDoneEntry_t &entry,
++	uint64_t idx, uint64_t now, uint64_t target, bool gate, bool duplicate )
++{
++	if ( !entry.fifo || !gamescope::TakeTimingTraceLine() )
++		return;
++	steamcompmgr_win_t *win = nullptr;
++	if ( ctx )
++	{
++		for ( steamcompmgr_win_t *w = ctx->list; w; w = w->xwayland().next )
++			if ( w->seq == entry.winSeq ) { win = w; break; }
++	}
++	else
++	{
++		for ( const auto &w : g_steamcompmgr_xdg_wins )
++			if ( w->seq == entry.winSeq ) { win = w.get(); break; }
++	}
++	xwm_log.infof( "timing-trace event=fifo_gate seq=%lu path=%s now_ns=%lu vblank_idx=%lu win_seq=%lu app=%u commit=%lu gate=%u duplicate=%u policy=%u desired_ns=%lu target_ns=%lu",
++		gamescope::TimingTraceSequence(), ctx ? "xwayland" : "xdg", now, idx, entry.winSeq,
++		win ? win->appID : 0u, entry.commitID, unsigned( gate ), unsigned( duplicate ),
++		unsigned( steamcompmgr_window_should_limit_fps( win ) ), entry.desiredPresentTime, target );
++}
++
+ // TODO: Merge these two functions.
+ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vblank_idx )
+ {
+@@ -6996,6 +7068,7 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 			entry_vblank = entry_vblank && steamcompmgr_should_vblank_window( true, vblank_idx );
+ 		}
+ 
++		timing_trace_fifo_gate( ctx, entry, vblank_idx, now, next_refresh_time, entry_vblank, fifo_win_seqs.count(entry.winSeq) > 0 );
+ 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+ 			commits_before_their_time.push_back( entry );
+@@ -7018,7 +7091,11 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 		{
+ 			if (w->seq != entry.winSeq)
+ 				continue;
+-			if (handle_done_commit(w, ctx, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime))
++			const bool admitted = handle_done_commit(w, ctx, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime);
++			if ( entry.fifo && gamescope::TakeTimingTraceLine() )
++				xwm_log.infof( "timing-trace event=fifo_latch seq=%lu path=xwayland now_ns=%lu vblank_idx=%lu win_seq=%lu app=%u commit=%lu admitted=%u",
++					gamescope::TimingTraceSequence(), get_time_in_nanos(), vblank_idx, w->seq, w->appID, entry.commitID, unsigned( admitted ) );
++			if (admitted)
+ 			{
+ 				if (entry.fifo)
+ 					fifo_win_seqs.insert(entry.winSeq);
+@@ -7053,6 +7130,7 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
+ 	// very fast loop yes
+ 	for ( auto& entry : g_steamcompmgr_xdg_done_commits.listCommitsDone )
+ 	{
++		timing_trace_fifo_gate( nullptr, entry, vblank_idx, now, next_refresh_time, vblank, fifo_win_seqs.count(entry.winSeq) > 0 );
+ 		if (entry.fifo && (!vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+ 			commits_before_their_time.push_back( entry );
+@@ -7075,7 +7153,11 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
+ 		{
+ 			if (xdg_win->seq != entry.winSeq)
+ 				continue;
+-			if (handle_done_commit(xdg_win.get(), nullptr, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime))
++			const bool admitted = handle_done_commit(xdg_win.get(), nullptr, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime);
++			if ( entry.fifo && gamescope::TakeTimingTraceLine() )
++				xwm_log.infof( "timing-trace event=fifo_latch seq=%lu path=xdg now_ns=%lu vblank_idx=%lu win_seq=%lu app=%u commit=%lu admitted=%u",
++					gamescope::TimingTraceSequence(), get_time_in_nanos(), vblank_idx, xdg_win->seq, xdg_win->appID, entry.commitID, unsigned( admitted ) );
++			if (admitted)
+ 			{
+ 				if (entry.fifo)
+ 					fifo_win_seqs.insert(entry.winSeq);
+@@ -8541,10 +8623,15 @@ steamcompmgr_main(int argc, char **argv)
+ 		g_SteamCompMgrWaiter.PollEvents();
+ 
+ 		bool vblank = false;
++		bool bTimingTraceTick = false;
++		uint64_t ulTimingTraceProcessed = 0;
+ 		if ( std::optional<gamescope::VBlankTime> pendingVBlank = GetVBlankTimer().ProcessVBlank() )
+ 		{
+ 			g_SteamCompMgrVBlankTime = *pendingVBlank;
+ 			vblank = true;
++			bTimingTraceTick = gamescope::BeginTimingTrace();
++			if ( bTimingTraceTick )
++				ulTimingTraceProcessed = get_time_in_nanos();
+ 		}
+ 
+ 		if ( g_bRun == false )
+@@ -8805,6 +8892,23 @@ steamcompmgr_main(int argc, char **argv)
+ 		// application can commit a new frame that completes before we ever displayed
+ 		// the current pending commit.
+ 		static uint64_t vblank_idx = 0;
++		static uint64_t ulTimingPreviousTarget = 0;
++		if ( bIsVBlankFromTimer )
++		{
++			if ( bTimingTraceTick )
++				xwm_log.infof( "timing-trace event=timer seq=%lu processed_ns=%lu now_ns=%lu wake_ns=%lu target_ns=%lu prev_target_ns=%lu vblank_idx=%lu refresh_mhz=%d cap=%d vrr=%u base_app=%u base_commit=%lu base_fifo=%u baseline_wake_ns=%lu requested_lead_ns=%lu applied_lead_ns=%lu original_target_ns=%lu consumed_target_ns=%lu target_advance_periods=%lu",
++					gamescope::TimingTraceSequence(), ulTimingTraceProcessed, get_time_in_nanos(),
++					g_SteamCompMgrVBlankTime.ulWakeupTime, g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank,
++					ulTimingPreviousTarget, vblank_idx, GetVBlankTimer().GetRefresh(), g_nSteamCompMgrTargetFPS,
++					unsigned( bVRR ), g_uCurrentBasePlaneAppID, g_uCurrentBasePlaneCommitID, unsigned( g_bCurrentBasePlaneIsFifo ),
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticBaselineWakeupPoint,
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticRequestedFixedLead,
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticAppliedFixedLead,
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticOriginalTarget,
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticConsumedTarget,
++					g_SteamCompMgrVBlankTime.schedule.ulDiagnosticTargetAdvancePeriods );
++			ulTimingPreviousTarget = g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank;
++		}
+ 		if ( vblank )
+ 		{
+ 			{
+diff --git a/src/vblankmanager.cpp b/src/vblankmanager.cpp
+index f036d00..fbfa1c2 100644
+--- a/src/vblankmanager.cpp
++++ b/src/vblankmanager.cpp
+@@ -25,6 +25,60 @@ namespace gamescope
+ {
+ 	ConVar<bool> vblank_debug( "vblank_debug", false, "Enable vblank debug spew to stderr." );
+ 
++	static std::atomic<unsigned int> s_uTimingTraceTimers{ 0 };
++	static std::atomic<unsigned int> s_uTimingTraceLines{ 0 };
++	static std::atomic<bool> s_bTimingTraceActive{ false };
++	static std::atomic<uint64_t> s_ulTimingTraceSequence{ 0 };
++	static std::atomic<uint64_t> s_ulDiagnosticFixedLead{ 0 };
++
++	ConVar<int> debug_timing_fixed_lead_ns( "debug_timing_fixed_lead_ns", 0,
++		"Experimental extra fixed-refresh wake lead in nanoseconds, clamped to one period and available time; 0 disables, ignored for VRR.",
++		[]( ConVar<int> &cv ) {
++			s_ulDiagnosticFixedLead.store( cv.Get() > 0 ? uint64_t( cv.Get() ) : 0, std::memory_order_relaxed );
++		} );
++
++	ConVar<int> debug_timing_trace_frames( "debug_timing_trace_frames", 0,
++		"Trace the next 1-600 processed timer events (0 stops); diagnostic only, adds logging overhead.",
++		[]( ConVar<int> &cv ) {
++			const unsigned int count = cv.Get() <= 0 ? 0u : std::min( unsigned( cv.Get() ), 600u );
++			s_bTimingTraceActive.store( false, std::memory_order_relaxed );
++			s_uTimingTraceTimers.store( count, std::memory_order_relaxed );
++		} );
++
++	bool BeginTimingTrace()
++	{
++		unsigned int remaining = s_uTimingTraceTimers.load( std::memory_order_relaxed );
++		while ( remaining && !s_uTimingTraceTimers.compare_exchange_weak( remaining, remaining - 1, std::memory_order_relaxed ) ) {}
++		if ( !remaining )
++		{
++			s_bTimingTraceActive.store( false, std::memory_order_relaxed );
++			return false;
++		}
++		s_ulTimingTraceSequence.fetch_add( 1, std::memory_order_relaxed );
++		s_uTimingTraceLines.store( 32, std::memory_order_relaxed );
++		s_bTimingTraceActive.store( true, std::memory_order_relaxed );
++		return true;
++	}
++
++	bool TimingTraceActive()
++	{
++		return s_bTimingTraceActive.load( std::memory_order_relaxed );
++	}
++
++	bool TakeTimingTraceLine()
++	{
++		if ( !TimingTraceActive() )
++			return false;
++		unsigned int remaining = s_uTimingTraceLines.load( std::memory_order_relaxed );
++		while ( remaining && !s_uTimingTraceLines.compare_exchange_weak( remaining, remaining - 1, std::memory_order_relaxed ) ) {}
++		return remaining != 0;
++	}
++
++	uint64_t TimingTraceSequence()
++	{
++		return s_ulTimingTraceSequence.load( std::memory_order_relaxed );
++	}
++
+ 	CVBlankTimer::CVBlankTimer()
+ 	{
+ 		m_ulTargetVBlank = get_time_in_nanos();
+@@ -100,7 +154,11 @@ namespace gamescope
+ 		const int nRefreshRate = GetRefresh();
+ 		const uint64_t ulRefreshInterval = mHzToRefreshCycle( nRefreshRate );
+ 
+-		bool bVRR = GetBackend()->GetCurrentConnector() && GetBackend()->GetCurrentConnector()->IsVRRActive();
++		const auto *pConnector = GetBackend()->GetCurrentConnector();
++		const uint64_t ulConnectorID = pConnector ? pConnector->GetConnectorID() : 0;
++		const int nWidth = g_nOutputWidth;
++		const int nHeight = g_nOutputHeight;
++		bool bVRR = pConnector && pConnector->IsVRRActive();
+ 		uint64_t ulOffset = 0;
+ 		if ( !bVRR )
+ 		{
+@@ -183,7 +241,26 @@ namespace gamescope
+ 		{
+ 			.ulTargetVBlank = ulTargetVBlank,
+ 			.ulScheduledWakeupPoint = ulScheduledWakeupPoint,
++			.ulDiagnosticBaselineWakeupPoint = ulScheduledWakeupPoint,
++			.ulDiagnosticOriginalTarget = ulTargetVBlank,
++			.ulDiagnosticConnectorID = ulConnectorID,
++			.nDiagnosticRefresh = nRefreshRate,
++			.nDiagnosticWidth = nWidth,
++			.nDiagnosticHeight = nHeight,
+ 		};
++		if ( !bVRR && UsingTimerFD() )
++		{
++			const uint64_t requested = std::min( s_ulDiagnosticFixedLead.load( std::memory_order_relaxed ), ulRefreshInterval );
++			if ( requested )
++			{
++				const uint64_t now = get_time_in_nanos();
++				const uint64_t earlier = ulScheduledWakeupPoint > requested ? ulScheduledWakeupPoint - requested : 0;
++				schedule.ulScheduledWakeupPoint = std::max( earlier, now );
++				schedule.ulDiagnosticRequestedFixedLead = requested;
++				schedule.ulDiagnosticAppliedFixedLead = ulScheduledWakeupPoint > schedule.ulScheduledWakeupPoint
++					? ulScheduledWakeupPoint - schedule.ulScheduledWakeupPoint : 0;
++			}
++		}
+ 		return schedule;
+ 	}
+ 
+@@ -238,6 +315,46 @@ namespace gamescope
+ 		if ( UsingTimerFD() )
+ 		{
+ 			m_TimerFDSchedule = CalcNextWakeupTime( bPreemptive );
++			auto &schedule = m_TimerFDSchedule;
++			if ( schedule.ulDiagnosticRequestedFixedLead )
++			{
++				const uint64_t interval = mHzToRefreshCycle( schedule.nDiagnosticRefresh );
++				const bool sameOutput = m_LastFixedLeadTimerSlot &&
++					m_LastFixedLeadTimerSlot->ulDiagnosticConnectorID == schedule.ulDiagnosticConnectorID &&
++					m_LastFixedLeadTimerSlot->nDiagnosticRefresh == schedule.nDiagnosticRefresh &&
++					m_LastFixedLeadTimerSlot->nDiagnosticWidth == schedule.nDiagnosticWidth &&
++					m_LastFixedLeadTimerSlot->nDiagnosticHeight == schedule.nDiagnosticHeight;
++				if ( !sameOutput )
++					m_LastFixedLeadTimerSlot.reset();
++				else
++				{
++					schedule.ulDiagnosticConsumedTarget = m_LastFixedLeadTimerSlot->ulTargetVBlank;
++					// An early, idle timer can rearm before its ORIGINAL wake has passed.
++					// Consume that physical slot once; do not increment the limiter again
++					// by dispatching an immediate timer for the same target. The small
++					// tolerance covers measured few-us DRM phase jitter, not modesets.
++					const uint64_t tolerance = std::min<uint64_t>( interval / 100, 100'000 );
++					const uint64_t minimumTarget = schedule.ulDiagnosticConsumedTarget + tolerance;
++					while ( schedule.ulTargetVBlank <= minimumTarget )
++					{
++						schedule.ulTargetVBlank += interval;
++						schedule.ulDiagnosticBaselineWakeupPoint += interval;
++						++schedule.ulDiagnosticTargetAdvancePeriods;
++					}
++					if ( schedule.ulDiagnosticTargetAdvancePeriods )
++					{
++						const uint64_t now = get_time_in_nanos();
++						const uint64_t baseline = schedule.ulDiagnosticBaselineWakeupPoint;
++						const uint64_t requested = schedule.ulDiagnosticRequestedFixedLead;
++						const uint64_t earlier = baseline > requested ? baseline - requested : 0;
++						schedule.ulScheduledWakeupPoint = std::max( earlier, now );
++						schedule.ulDiagnosticAppliedFixedLead = baseline > schedule.ulScheduledWakeupPoint
++							? baseline - schedule.ulScheduledWakeupPoint : 0;
++					}
++				}
++			}
++			else
++				m_LastFixedLeadTimerSlot.reset();
+ 
+ 			ITimerWaitable::ArmTimer( m_TimerFDSchedule.ulScheduledWakeupPoint );
+ 		}
+@@ -259,10 +376,36 @@ namespace gamescope
+ 		{
+ 			std::unique_lock lock( m_ScheduleMutex );
+ 
++			if ( m_TimerFDSchedule.ulDiagnosticRequestedFixedLead && m_bArmed )
++			{
++				// epoll readiness can outlive a DRM-thread rearm. timerfd_settime
++				// resets its expiration count: consume the CURRENT timer before
++				// marking its target used, or leave a new arm intact on EAGAIN.
++				uint64_t expirations = 0;
++				ssize_t count;
++				do
++				{
++					count = read( ITimerWaitable::GetFD(), &expirations, sizeof( expirations ) );
++				}
++				while ( count < 0 && errno == EINTR );
++				if ( count < 0 && errno == EAGAIN )
++					return;
++				if ( count != sizeof( expirations ) || !expirations )
++				{
++					if ( count < 0 )
++						g_VBlankLog.errorf_errno( "Failed to read experimental fixed-lead timer expiration." );
++					return;
++				}
++			}
++
+ 			// Disarm the timer if it was armed.
+ 			if ( !m_bArmed.exchange( false ) )
+ 				return;
+ 
++			if ( m_TimerFDSchedule.ulDiagnosticRequestedFixedLead )
++				m_LastFixedLeadTimerSlot = m_TimerFDSchedule;
++			else
++				m_LastFixedLeadTimerSlot.reset();
+ 
+ 			m_PendingVBlank = VBlankTime
+ 			{
+@@ -407,4 +550,3 @@ gamescope::CVBlankTimer &GetVBlankTimer()
+     static gamescope::CVBlankTimer s_VBlankTimer;
+     return s_VBlankTimer;
+ }
+-
+diff --git a/src/vblankmanager.hpp b/src/vblankmanager.hpp
+index 582f0e2..1f7af44 100644
+--- a/src/vblankmanager.hpp
++++ b/src/vblankmanager.hpp
+@@ -5,6 +5,13 @@
+ 
+ namespace gamescope
+ {
++    // Diagnostic only: disabled by default and bounded to 600 timer events.
++    // Secondary events share a 32-line budget per processed timer event.
++    bool BeginTimingTrace();
++    bool TimingTraceActive();
++    bool TakeTimingTraceLine();
++    uint64_t TimingTraceSequence();
++
+     struct VBlankScheduleTime
+     {
+         // The expected time for the vblank we want to target.
+@@ -12,6 +19,18 @@ namespace gamescope
+         // The vblank offset by the redzone/scheduling calculation.
+         // This is when we want to wake-up by to meet that vblank time above.
+         uint64_t ulScheduledWakeupPoint = 0;
++        // Diagnostic metadata only; keep the intended presentation target intact.
++        uint64_t ulDiagnosticBaselineWakeupPoint = 0;
++        uint64_t ulDiagnosticRequestedFixedLead = 0;
++        uint64_t ulDiagnosticAppliedFixedLead = 0;
++        uint64_t ulDiagnosticOriginalTarget = 0;
++        uint64_t ulDiagnosticConsumedTarget = 0;
++        uint64_t ulDiagnosticTargetAdvancePeriods = 0;
++        // Capture the output context with the schedule, rather than on timer dispatch.
++        uint64_t ulDiagnosticConnectorID = 0;
++        int nDiagnosticRefresh = 0;
++        int nDiagnosticWidth = 0;
++        int nDiagnosticHeight = 0;
+     };
+ 
+     struct VBlankTime
+@@ -80,6 +99,8 @@ namespace gamescope
+         // Does not cover m_ulLastVBlank, this is just atomic.
+         std::mutex m_ScheduleMutex;
+         VBlankScheduleTime m_TimerFDSchedule{};
++        // Positive-lead timerfd only. Accessed under m_ScheduleMutex.
++        std::optional<VBlankScheduleTime> m_LastFixedLeadTimerSlot;
+ 
+         std::thread m_NudgeThread;
+         int m_nNudgePipe[2] = { -1, -1 };
+@@ -133,4 +154,3 @@ namespace gamescope
+ }
+ 
+ gamescope::CVBlankTimer &GetVBlankTimer();
+-

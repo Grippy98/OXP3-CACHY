@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.onex3.PowerControlActivator
+Exec=/usr/bin/python3 /usr/local/lib/onex3-fixes/tdp/onex3_tdp.py serve
+User=root
+SystemdService=onex3-tdp.service

@@ -1,0 +1,30 @@
+From ac18fca602c8829184af094d8929b54e3f0e092c Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Thu, 3 Sep 2026 11:29:37 -0500
+Subject: [PATCH] HID: hid-oxp: reject invalid Gen2 RGB status values
+
+Do not replace the cached RGB state with a Gen2 status report whose enable,
+speed or hardware brightness fields are outside the supported ranges.
+
+Fixes: 252c4bf1d931 ("HID: hid-oxp: Add Second Generation RGB Control")
+Assisted-by: LLM
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index 86a559c074d5b2..c3cfa95a7b4937 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -415,6 +415,10 @@ static int oxp_hid_raw_event_gen_2(struct hid_device *hdev,
+ 		return 0;
+ 
+ 	rgb_rep = (struct oxp_gen_2_rgb_report *)data;
++	if (rgb_rep->enabled > OXP_FEAT_ENABLED || rgb_rep->speed > 9 ||
++	    rgb_rep->brightness > 4)
++		return 0;
++
+ 	/* Ensure we save monocolor as the list value */
+ 	drvdata.rgb_effect = rgb_rep->effect == OXP_EFFECT_MONO_TRUE ?
+ 			     OXP_EFFECT_MONO_LIST :

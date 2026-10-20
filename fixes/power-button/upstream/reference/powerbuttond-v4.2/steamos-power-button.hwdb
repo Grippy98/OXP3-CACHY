@@ -1,0 +1,32 @@
+# SW_LID
+id-input:modalias:input:*,5,*w0*
+# KEY_POWER
+id-input:modalias:input:*,1,*k*74*
+# KEY_F16
+id-input:modalias:input:*,1,*k*BA*
+ STEAMOS_POWER_BUTTON=1
+
+evdev:name:Power Button:dmi:*svnValve:pnJupiter:*
+evdev:name:Power Button:dmi:*svnValve:pnGalileo:*
+ STEAMOS_POWER_BUTTON_IGNORE=1
+
+# Temporary scancode overrides -- remove these once they get upstreamed into systemd
+# AYA NEO
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnAYA NEO:*
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnAYADEVICE:*
+# Lenovo Legion Go
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83E1:*
+# Lenovo Legion Go S
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83L3:*
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83N6:*
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83Q2:*
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83Q3:*
+# Lenovo Legion Go 2
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83N0:*
+evdev:name:AT Translated Set 2 keyboard:dmi:*svnLENOVO:pn83N1:*
+ KEYBOARD_KEY_67=f16
+
+# Lenovo Legion Go 2
+evdev:name:AT Raw Set 2 keyboard:dmi:*svnLENOVO:pn83N0:*
+evdev:name:AT Raw Set 2 keyboard:dmi:*svnLENOVO:pn83N1:*
+ KEYBOARD_KEY_20=f16

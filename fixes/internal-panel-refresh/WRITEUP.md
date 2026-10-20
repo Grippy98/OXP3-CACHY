@@ -1,0 +1,11 @@
+# Refresh selection and presentation timing
+
+The panel's fixed mode list and its adaptive-sync range are different inputs. Native 60/144 modes leave Gamescope without a 120 Hz choice for a 60 FPS request. A strict refresh-only Lua profile adds the exact 120 Hz timing using the existing pixel clock and horizontal timing. It matches only Samsung SDC:4301/AMS881KB01-0 and refuses changed base timings, preserving HDR/color/backlight interpretation. The profile adapter changes only this mode-generation input.
+
+The accepted presentation result required more than the mode profile. The separate kernel retains two upstream Intel DSB timing-window corrections and adds the upstream DC-balance gate defaulting off. Its signed OXP controller module and UHID/UINPUT paths are essential because changing the kernel release also changes module compatibility; a working picture with missing virtual-input transports is not an acceptable deployment.
+
+The accepted Gamescope source is pinned 3.16.25 with guarded timer instrumentation/consumed-target handling. A positive fixed-refresh wake lead was separately explored, but the owner's accepted persistent VRR runtime uses **zero lead and zero tracing**. The public build stages matching runtime data and WSI assets, while a checksum-guarded wrapper falls back to distribution Gamescope after an unexpected binary change. The earlier upstream FIFO/VRR backports and Mangoapp rendering correction did not independently solve the observed pacing issue.
+
+The original owner confirmed controls and motion, requested persistence and verified the normal reboot on `7.2.9-onex3-vrr-test`. That limited acceptance must not be generalized to all games, latency/power, suspend or dock transitions. Software FPS/event counters also have attribution and sampling limits; the separate per-submit telemetry candidate is retained for review but is not part of the accepted runtime.
+
+[README](README.md) gives the profile-only commands. [Kernel recipes](kernel/README.md), [Gamescope recipes](gamescope/README.md) and [manual runtime selection](permanent/README.md) preserve the complete accepted source/build/rollback path. Prefer distribution adoption of the merged Intel fixes and same-panel upstream Gamescope support; the local scheduler/telemetry changes require independent review.

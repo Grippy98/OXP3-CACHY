@@ -1,0 +1,22 @@
+diff --git a/etc/inputplumber/capability_maps.d/onexplayer_type9.yaml b/etc/inputplumber/capability_maps.d/onexplayer_type9.yaml
+--- a/etc/inputplumber/capability_maps.d/onexplayer_type9.yaml
++++ b/etc/inputplumber/capability_maps.d/onexplayer_type9.yaml
+@@ -34,7 +34,9 @@
+       - keyboard: KeyO
+     target_event:
+       gamepad:
+-        button: QuickAccess2
++        # InputPlumber 0.81.0 maps Keyboard to Steam's Guide+North OSK chord.
++        # PR #660 used QuickAccess2, which the default profile turns into Screenshot.
++        button: Keyboard
+ 
+ # List of events to filter from the source devices
+ filtered_events: []
+diff --git a/etc/udev/hwdb.d/61-onexplayer3-inputplumber-autostart.hwdb b/etc/udev/hwdb.d/61-onexplayer3-inputplumber-autostart.hwdb
+new file mode 100644
+--- /dev/null
++++ b/etc/udev/hwdb.d/61-onexplayer3-inputplumber-autostart.hwdb
+@@ -0,0 +1,3 @@
++# ONEXPLAYER 3: local equivalent of InputPlumber PR #660 autostart.
++dmi:*svnONE-NETBOOK:pnONEXPLAYER3:*
++  USE_INPUTPLUMBER=1

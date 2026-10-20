@@ -1,0 +1,43 @@
+From 14011c83492d14d7c102d3d1fbcec6cc530e99a3 Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Thu, 3 Sep 2026 11:29:37 -0500
+Subject: [PATCH] HID: hid-oxp: retain fractional brightness when reading RGB
+ status
+
+Multiply the hardware brightness level by the LED brightness range before
+dividing by four. Dividing first reported every intermediate hardware
+level as zero instead of 25, 50 or 75 percent.
+
+Fixes: 84910c459d65 ("HID: hid-oxp: Add OneXPlayer configuration driver")
+Assisted-by: LLM
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index 0c895bd778bbf6..86a559c074d5b2 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -334,8 +334,8 @@ static int oxp_hid_raw_event_gen_1(struct hid_device *hdev,
+ 	drvdata.rgb_en = rgb_rep->enabled == 0 ? OXP_FEAT_DISABLED :
+ 						 OXP_FEAT_ENABLED;
+ 	drvdata.rgb_brightness = rgb_rep->brightness;
+-	led_mc->led_cdev.brightness = rgb_rep->brightness / 4 *
+-				      led_mc->led_cdev.max_brightness;
++	led_mc->led_cdev.brightness = rgb_rep->brightness *
++				      led_mc->led_cdev.max_brightness / 4;
+ 	/* If monocolor had less than 100% brightness on the previous boot,
+ 	 * there will be no reliable way to determine the real intensity.
+ 	 * Since intensity scaling is used with a hardware brightness set at max,
+@@ -423,8 +423,8 @@ static int oxp_hid_raw_event_gen_2(struct hid_device *hdev,
+ 	drvdata.rgb_en = rgb_rep->enabled == 0 ? OXP_FEAT_DISABLED :
+ 						 OXP_FEAT_ENABLED;
+ 	drvdata.rgb_brightness = rgb_rep->brightness;
+-	led_mc->led_cdev.brightness = rgb_rep->brightness / 4 *
+-				      led_mc->led_cdev.max_brightness;
++	led_mc->led_cdev.brightness = rgb_rep->brightness *
++				      led_mc->led_cdev.max_brightness / 4;
+ 	/* If monocolor had less than 100% brightness on the previous boot,
+ 	 * there will be no reliable way to determine the real intensity.
+ 	 * Since intensity scaling is used with a hardware brightness set at max,

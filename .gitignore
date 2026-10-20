@@ -1,0 +1,25 @@
+# Local builds and generated test output
+/build/
+/dist/
+/out/
+/local-artifacts/
+/evidence/
+__pycache__/
+*.py[cod]
+*.o
+*.a
+*.so
+*.ko
+*.efi
+*.EFI
+*.pkg.tar.*
+*.deb
+*.rpm
+*.log
+*.csv
+*.bin
+*.pem
+*.key
+*.crt
+*.p12
+.DS_Store

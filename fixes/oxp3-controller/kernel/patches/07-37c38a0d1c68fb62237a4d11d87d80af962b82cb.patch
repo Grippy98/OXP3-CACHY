@@ -1,0 +1,53 @@
+From 37c38a0d1c68fb62237a4d11d87d80af962b82cb Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Thu, 3 Sep 2026 11:30:09 -0500
+Subject: [PATCH] HID: hid-oxp: select brightness policy for the new RGB effect
+
+Set the requested effect before constructing its status command, since
+monocolor uses maximum hardware brightness and software intensity scaling.
+Previously entering or leaving monocolor used the old effect's brightness
+policy. Restore the cached effect if either output command fails.
+
+Fixes: 84910c459d65 ("HID: hid-oxp: Add OneXPlayer configuration driver")
+Assisted-by: LLM
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index 8d078161321663..9c22c8e0703a71 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -1240,6 +1240,7 @@ static DEVICE_ATTR_RO(enabled_index);
+ static ssize_t effect_store(struct device *dev, struct device_attribute *attr,
+ 			    const char *buf, size_t count)
+ {
++	u8 old_effect;
+ 	int ret;
+ 	u8 val;
+ 
+@@ -1250,15 +1251,21 @@ static ssize_t effect_store(struct device *dev, struct device_attribute *attr,
+ 	val = ret;
+ 
+ 	guard(mutex)(&drvdata.rgb_mutex);
++	old_effect = drvdata.rgb_effect;
++	drvdata.rgb_effect = val;
+ 
+ 	ret = oxp_rgb_status_store(drvdata.rgb_en, drvdata.rgb_speed,
+ 				   drvdata.rgb_brightness);
+-	if (ret)
++	if (ret) {
++		drvdata.rgb_effect = old_effect;
+ 		return ret;
++	}
+ 
+ 	ret = oxp_rgb_effect_set(val);
+-	if (ret)
++	if (ret) {
++		drvdata.rgb_effect = old_effect;
+ 		return ret;
++	}
+ 
+ 	return count;
+ }

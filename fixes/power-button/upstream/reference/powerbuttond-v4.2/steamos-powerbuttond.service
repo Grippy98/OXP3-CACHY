@@ -1,0 +1,8 @@
+[Unit]
+Description=Power Button daemon for SteamOS
+Requisite=gamescope-session.service
+
+[Service]
+ExecStart=/usr/lib/hwsupport/steamos-powerbuttond
+Restart=on-failure
+Slice=session.slice

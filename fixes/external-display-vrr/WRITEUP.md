@@ -1,0 +1,11 @@
+# Intel PCON VRR: what is implemented and what remains open
+
+The physical HDMI path is exposed upstream as a DP branch. Intel's normal capability gate rejects branch VRR, and the observed converter omits MSA timing-ignore capability while misdescribing its downstream port. The AS-v1 candidate separates ordinary capability checks from an explicitly local identity/descriptor exception. Its experimental controls remain disabled by default.
+
+Revision 1 AS packets carry the `00 22 01 00` header and zero payload; native DP/eDP revision 2 behavior remains separate. The upstream mode-VTotal correction ensures actual MSA/transcoder VTotal is retained instead of 1. Both changes reached GPU state, but AS-only physical tests still blanked. Correct readback proves only the programmed GPU side, not converter transmission or TV acceptance.
+
+The v3 prototype additionally packs AMD FreeSync v2 into the DP-capable GMP slot. It checks the exact converter, bounded CTA data, active VRR, AMD range coverage and SDR/default colorspace, and compares packet purpose/bytes during state readback. GMP ordinarily carries HDR metadata, so HDR/HLG/unknown payloads remain on their original path; this experiment does not support simultaneous HDR and FreeSync in GMP.
+
+The narrow positive result is owner-confirmed stable FreeSync near 80 Hz during a steady 80 FPS 1080p120 SDR workload. Sweep 60/80 was positive, 100 FPS black/dropped frames remain unresolved. Fixed 4K120 SDR works; 10 bpc VRR briefly displayed 120 then black despite correct AS/GMP/PPS/timing state. The 8 bpc DSC trial had a near-80 Hz GPU source counter with physical feedback unconfirmed. **There is no working 4K VRR/HDR claim.**
+
+The host suites validate exact function behavior and exhaustive AMD packet equivalence; they cannot validate the wire or screen. Kernel packages/build tools are manual and preserve accepted controller/boot recovery. [README](README.md) contains the status table, [recipes](recipes/README.md) and [v3 recipes](freesync-gmp/recipes/README.md) identify prerequisites, and source fixtures retain Intel/AMD licenses. An upstream proposal should separate generic AS-v1 packet support from the local descriptor exception and require repeatable conformance/regression evidence before broadening it.

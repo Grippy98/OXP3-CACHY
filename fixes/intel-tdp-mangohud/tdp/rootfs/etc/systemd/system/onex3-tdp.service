@@ -1,0 +1,18 @@
+[Unit]
+Description=ONEXPLAYER 3 RAPL TDP remote for SteamOS Manager
+After=dbus.service systemd-user-sessions.service
+Wants=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/onex3-fixes/tdp/onex3_tdp.py serve
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/sys/devices/virtual/powercap
+
+[Install]
+WantedBy=multi-user.target

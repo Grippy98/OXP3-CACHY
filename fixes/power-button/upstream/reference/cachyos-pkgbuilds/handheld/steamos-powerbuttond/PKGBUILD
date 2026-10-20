@@ -1,0 +1,25 @@
+# Maintainer: Peter Jung <admin@ptr1337.dev>
+# Maintainer: Eric Naim <dnaim@cachyos.org>
+
+pkgname=steamos-powerbuttond
+pkgver=4.2
+pkgrel=1
+arch=('x86_64')
+url="https://gitlab.steamos.cloud/jupiter/powerbuttond"
+pkgdesc="Power button daemon"
+license=('BSD-2-Clause')
+depends=('glibc' 'libevdev' 'systemd-libs')
+makedepends=('git')
+source=("git+https://gitlab.steamos.cloud/holo/powerbuttond.git#tag=v${pkgver}")
+sha512sums=('95bd9ce60bfa8525558af47733cc9d4496477f3fe543629728dc1264a0da29b1577cc84dbd3182ddef436b20994d5a814ef80e05694fb96f9b94e7bd970471a7')
+provides=("powerbuttond")
+conflicts=("powerbuttond")
+replaces=("powerbuttond")
+
+build() {
+    make -C "${srcdir}/powerbuttond"
+}
+
+package() {
+    make -C "${srcdir}/powerbuttond" install DESTDIR="${pkgdir}"
+}

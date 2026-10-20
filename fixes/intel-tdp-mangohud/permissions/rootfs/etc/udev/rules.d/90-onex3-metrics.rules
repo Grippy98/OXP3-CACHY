@@ -1,0 +1,3 @@
+# A targeted helper checks DMI, domain names and the exact Intel PMT schema.
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", RUN+="/usr/bin/python3 /usr/local/lib/onex3-metrics/onex3_metrics_permissions.py apply"
+ACTION=="add", SUBSYSTEM=="intel_pmt", KERNEL=="telem*", RUN+="/usr/bin/python3 /usr/local/lib/onex3-metrics/onex3_metrics_permissions.py apply"

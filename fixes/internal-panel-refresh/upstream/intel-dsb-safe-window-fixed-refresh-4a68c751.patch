@@ -1,0 +1,89 @@
+From 4a68c7516c57a3d03b406c8aaa073c62149aad68 Mon Sep 17 00:00:00 2001
+From: Ankit Nautiyal <ankit.k.nautiyal@intel.com>
+Date: Wed, 17 Jun 2026 10:44:17 +0530
+Subject: [PATCH] drm/i915/dsb: Use safe window path when VRR TG is used
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When the VRR timing generator is always used, the hardware behaves
+as VRR-active regardless of crtc_state->vrr.enable.
+
+The DSB paths that depend on the VRR safe window therefore need to follow
+the VRR code paths in that case too:
+- dsb_chicken(): program the SAFE_WINDOW chicken bits,
+- intel_dsb_vblank_evade(): use vmin/vmax vblank starts for the
+  wait window,
+- intel_dsb_wait_for_delayed_vblank(): wait inside the vmin safe window
+  before the scanline-based delayed vblank wait.
+
+Introduce helper pre_commit_use_safe_window() and use it in the three sites
+
+v2: Instead of modifying pre_commit_is_vrr_active() use a new helper and
+    use it only in the required places. (Ville).
+
+v3: -Keep using pre_commit_is_vrr_active() for DCB path. (Ville)
+    -Add a separate check for fixed RR with VRR TG and use
+     fixed mode vblank start there. (Ville)
+
+Signed-off-by: Ankit Nautiyal <ankit.k.nautiyal@intel.com>
+Reviewed-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+Link: https://patch.msgid.link/20260617051417.2223526-1-ankit.k.nautiyal@intel.com
+---
+ drivers/gpu/drm/i915/display/intel_dsb.c | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_dsb.c b/drivers/gpu/drm/i915/display/intel_dsb.c
+index 07dd6318d9cce2..d9a270362a82c2 100644
+--- a/drivers/gpu/drm/i915/display/intel_dsb.c
++++ b/drivers/gpu/drm/i915/display/intel_dsb.c
+@@ -210,6 +210,18 @@ static int dsb_scanline_to_hw(struct intel_atomic_state *state,
+ 	return (scanline + vtotal - intel_crtc_scanline_offset(crtc_state)) % vtotal;
+ }
+ 
++static
++bool pre_commit_use_safe_window(struct intel_atomic_state *state,
++				struct intel_crtc *crtc)
++{
++	struct intel_display *display = to_intel_display(crtc->base.dev);
++
++	if (intel_vrr_always_use_vrr_tg(display))
++		return true;
++
++	return pre_commit_is_vrr_active(state, crtc);
++}
++
+ /*
+  * Bspec suggests that we should always set DSB_SKIP_WAITS_EN. We have approach
+  * different from what is explained in Bspec on how flip is considered being
+@@ -229,7 +241,7 @@ static u32 dsb_chicken(struct intel_atomic_state *state,
+ 	u32 chicken = intel_psr_use_trans_push(new_crtc_state) ?
+ 		DSB_SKIP_WAITS_EN : 0;
+ 
+-	if (pre_commit_is_vrr_active(state, crtc))
++	if (pre_commit_use_safe_window(state, crtc))
+ 		chicken |= DSB_CTRL_WAIT_SAFE_WINDOW |
+ 			DSB_CTRL_NO_WAIT_VBLANK |
+ 			DSB_INST_WAIT_SAFE_WINDOW |
+@@ -798,6 +810,12 @@ void intel_dsb_vblank_evade(struct intel_atomic_state *state,
+ 		end = intel_vrr_vmax_vblank_start(crtc_state);
+ 		start = end - vblank_delay - latency;
+ 		intel_dsb_wait_scanline_out(state, dsb, start, end);
++	} else if (pre_commit_use_safe_window(state, crtc)) {
++		int vblank_delay = crtc_state->set_context_latency;
++
++		end = intel_mode_vblank_start(&crtc_state->hw.adjusted_mode);
++		start = end - vblank_delay - latency;
++		intel_dsb_wait_scanline_out(state, dsb, start, end);
+ 	} else {
+ 		int vblank_delay = intel_mode_vblank_delay(&crtc_state->hw.adjusted_mode);
+ 
+@@ -891,7 +909,7 @@ void intel_dsb_wait_for_delayed_vblank(struct intel_atomic_state *state,
+ 		&crtc_state->hw.adjusted_mode;
+ 	int wait_scanlines;
+ 
+-	if (pre_commit_is_vrr_active(state, crtc)) {
++	if (pre_commit_use_safe_window(state, crtc)) {
+ 		/*
+ 		 * If the push happened before the vmin decision boundary
+ 		 * we don't know how far we are from the undelayed vblank.

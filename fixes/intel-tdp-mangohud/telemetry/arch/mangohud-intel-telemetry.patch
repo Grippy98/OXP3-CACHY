@@ -1,0 +1,882 @@
+diff --git a/README.md b/README.md
+index 660dc9d..42c3fa3 100644
+--- a/README.md
++++ b/README.md
+@@ -652,7 +652,7 @@ Example output:
+ 		<td>🟢</td>
+ 		<td>🟢</td>
+ 		<td>🟢</td>
+-		<td>🔴</td>
++		<td>🟢</td>
+ 		<td>🔴</td>
+ 	</tr>
+ 	<tr>
+@@ -692,7 +692,9 @@ Example output:
+ - GPU usage and memory usage shows usage of current process, not total system usage (it's an issue on intel's side)
+   - https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/14153
+   - https://gitlab.freedesktop.org/drm/xe/kernel/-/issues/4861
+-- Integrated Intel GPUs are **limited** due to lack of hwmon interface (it's an issue on intel's side, [i915 source](https://github.com/torvalds/linux/blob/5fc31936081919a8572a3d644f3fbb258038f337/drivers/gpu/drm/i915/i915_hwmon.c#L914-L916), [xe source](https://github.com/torvalds/linux/blob/5fc31936081919a8572a3d644f3fbb258038f337/drivers/gpu/drm/xe/xe_hwmon.c#L824-L826))
++- Integrated Intel GPU power uses the RAPL `uncore` powercap energy counter when
++  it is present and readable by the current user.
++- Integrated Intel GPUs are otherwise **limited** due to lack of hwmon interface (it's an issue on intel's side, [i915 source](https://github.com/torvalds/linux/blob/5fc31936081919a8572a3d644f3fbb258038f337/drivers/gpu/drm/i915/i915_hwmon.c#L914-L916), [xe source](https://github.com/torvalds/linux/blob/5fc31936081919a8572a3d644f3fbb258038f337/drivers/gpu/drm/xe/xe_hwmon.c#L824-L826))
+ 
+ #### Panfrost and Panthor notes
+ - GPU usage requires `echo N | sudo tee /sys/class/drm/renderD*/device/profiling`
+diff --git a/src/cpu.cpp b/src/cpu.cpp
+index f46faba..d92dafc 100644
+--- a/src/cpu.cpp
++++ b/src/cpu.cpp
+@@ -420,16 +420,10 @@ static bool get_cpu_power_rapl(CPUPowerData* cpuPowerData, float& power) {
+     if (fscanf(powerData_rapl->energyCounterFile, "%" SCNu64, &energyCounterValue) != 1)
+         return false;
+ 
+-    Clock::time_point now = Clock::now();
+-    Clock::duration timeDiff = now - powerData_rapl->lastCounterValueTime;
+-    int64_t timeDiffMicro = std::chrono::duration_cast<std::chrono::microseconds>(timeDiff).count();
+-    uint64_t energyCounterDiff = energyCounterValue - powerData_rapl->lastCounterValue;
+-
+-    if (powerData_rapl->lastCounterValue > 0 && energyCounterValue > powerData_rapl->lastCounterValue)
+-        power = energyCounterDiff / timeDiffMicro;
+-
+-    powerData_rapl->lastCounterValue = energyCounterValue;
+-    powerData_rapl->lastCounterValueTime = now;
++    const uint64_t time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        Clock::now().time_since_epoch()).count();
++    power = powerData_rapl->sample.sample(energyCounterValue, time_ns,
++                                         powerData_rapl->maxEnergyRange);
+ 
+     return true;
+ }
+@@ -714,6 +708,8 @@ static CPUPowerData_rapl* init_cpu_power_data_rapl(const std::string path) {
+         return nullptr;
+     }
+ 
++    SPDLOG_DEBUG("RAPL: using package energy counter {}", energyCounterPath);
++    parse_rapl_counter(read_line(path + "/max_energy_range_uj"), powerData->maxEnergyRange);
+     return powerData.release();
+ }
+ 
+@@ -733,12 +729,11 @@ bool CPUStats::InitCpuPowerData() {
+     if(m_cpuPowerData != nullptr)
+         return true;
+ 
+-    // only try to find a valid method 5 times
+-    static int retries = 0;
+-    if (retries >= 5)
+-        return true;
+-
+-    retries++;
++    static RaplDiscoveryRetry retry;
++    const uint64_t time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        Clock::now().time_since_epoch()).count();
++    if (!retry.should_attempt(time_ns))
++        return false;
+     
+     std::string name, path;
+     std::string hwmon = "/sys/class/hwmon/";
+@@ -778,16 +773,15 @@ bool CPUStats::InitCpuPowerData() {
+ 
+     if (!cpuPowerData) {
+         std::string powercap = "/sys/class/powercap/";
+-        auto powercap_dirs = ls(powercap.c_str());
+-        for (auto& dir : powercap_dirs) {
+-            path = powercap + dir;
+-            name = read_line(path + "/name");
+-            SPDLOG_DEBUG("powercap: name: {}", name);
+-            if (name == "package-0") {
+-                cpuPowerData = (CPUPowerData*)init_cpu_power_data_rapl(path);
+-                break;
+-            }
+-        }
++        cpuPowerData = find_package_zero_rapl_counter(ls(powercap.c_str()),
++            [&](const std::string& dir) {
++                const std::string zone_name = read_line(powercap + dir + "/name");
++                SPDLOG_DEBUG("powercap: {} name: {}", dir, zone_name);
++                return zone_name;
++            },
++            [&](const std::string& dir) -> CPUPowerData* {
++                return init_cpu_power_data_rapl(powercap + dir);
++            });
+     }
+     
+     if(cpuPowerData == nullptr) {
+diff --git a/src/cpu.h b/src/cpu.h
+index d27c788..cab7814 100644
+--- a/src/cpu.h
++++ b/src/cpu.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include "rapl_energy.h"
+ #ifndef MANGOHUD_CPU_H
+ #define MANGOHUD_CPU_H
+ 
+@@ -128,8 +129,6 @@ struct CPUPowerData_zenergy : public CPUPowerData {
+ struct CPUPowerData_rapl : public CPUPowerData {
+    CPUPowerData_rapl() {
+       this->source = CPU_POWER_RAPL;
+-      this->lastCounterValue = 0;
+-      this->lastCounterValueTime = Clock::now();
+    };
+ 
+    ~CPUPowerData_rapl() {
+@@ -138,8 +137,8 @@ struct CPUPowerData_rapl : public CPUPowerData {
+    };
+ 
+    FILE* energyCounterFile {nullptr};
+-   uint64_t lastCounterValue;
+-   Clock::time_point lastCounterValueTime;
++   RaplEnergySample sample;
++   uint64_t maxEnergyRange = 0;
+ };
+ 
+ struct CPUPowerData_amdgpu : public CPUPowerData {
+diff --git a/src/gpu.cpp b/src/gpu.cpp
+index 3c00a69..1bcd448 100644
+--- a/src/gpu.cpp
++++ b/src/gpu.cpp
+@@ -189,11 +189,12 @@ std::string GPU::gpu_text() {
+ 
+ std::string GPU::vram_text() {
+     std::string vram_text;
++    const std::string label = uses_integrated_memory() ? "GPU mem" : "VRAM";
+     size_t index = this->index_in_selected_gpus();
+     if (gpus->selected_gpus().size() > 1)
+-        vram_text = "VRAM" + std::to_string(index);
++        vram_text = label + std::to_string(index);
+     else
+-        vram_text = "VRAM";
++        vram_text = label;
+     return vram_text;
+ }
+ 
+diff --git a/src/gpu.h b/src/gpu.h
+index 675d64f..4480930 100644
+--- a/src/gpu.h
++++ b/src/gpu.h
+@@ -100,6 +100,13 @@ class GPU {
+                 return false;
+         }
+ 
++        bool uses_integrated_memory() const {
++            if (fdinfo)
++                return fdinfo->uses_integrated_memory();
++            else
++                return false;
++        }
++
+         std::shared_ptr<Throttling> throttling() {
+             if (nvidia)
+                 return nvidia->throttling;
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+index 0fdd99e..ea2dc67 100644
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -1,4 +1,7 @@
+ #include "gpu_fdinfo.h"
++#include "file_utils.h"
++#include "intel_fdinfo_memory.h"
++#include "intel_pmt.h"
+ 
+ #ifndef TEST_ONLY
+ #include "hud_elements.h"
+@@ -38,7 +41,7 @@ void GPU_fdinfo::find_fd()
+         for (std::string line; std::getline(file, line);) {
+             size_t colon = line.find(":");
+ 
+-            if (line[0] == ' ' || line[0] == '\t')
++            if (line.empty() || line[0] == ' ' || line[0] == '\t')
+                 continue;
+ 
+             if (colon == std::string::npos || colon + 2 >= line.length())
+@@ -96,7 +99,7 @@ void GPU_fdinfo::gather_fdinfo_data() {
+         for (std::string line; std::getline(fdinfo[i], line);) {
+             size_t colon = line.find(":");
+ 
+-            if (line[0] == ' ' || line[0] == '\t')
++            if (line.empty() || line[0] == ' ' || line[0] == '\t')
+                 continue;
+ 
+             if (colon == std::string::npos || colon + 2 >= line.length())
+@@ -109,6 +112,19 @@ void GPU_fdinfo::gather_fdinfo_data() {
+     }
+ }
+ 
++void GPU_fdinfo::update_intel_memory_type()
++{
++    const std::string integrated_type = intel_shared_memory_key(module, fdinfo_data);
++    if (integrated_type.empty() || drm_memory_type == integrated_type)
++        return;
++
++    const auto old_type = drm_memory_type;
++    drm_memory_type = integrated_type;
++    intel_gpu_integrated = true;
++    SPDLOG_DEBUG("{} is unavailable; using current-process shared memory {}",
++                 old_type, integrated_type);
++}
++
+ uint64_t GPU_fdinfo::get_gpu_time()
+ {
+     uint64_t total = 0;
+@@ -303,11 +319,157 @@ void GPU_fdinfo::get_current_hwmon_readings()
+     }
+ }
+ 
++bool GPU_fdinfo::has_hwmon_sensor(const std::string& key) const
++{
++    auto sensor = hwmon_sensors.find(key);
++    return sensor != hwmon_sensors.end() && sensor->second.stream.is_open();
++}
++
++bool GPU_fdinfo::intel_gpu_uses_package_zero() const
++{
++    if (pci_dev != "0000:00:02.0" ||
++        read_line("/sys/class/powercap/intel-rapl:0/name") != "package-0")
++        return false;
++
++    const std::string powercap = "/sys/class/powercap/";
++    for (const auto& dir : ls(powercap.c_str())) {
++        if (dir.find("intel-rapl:") != 0)
++            continue;
++        const std::string name = read_line(powercap + dir + "/name");
++        if (name.find("package-") == 0 && name != "package-0")
++            return false;
++    }
++    return true;
++}
++
++void GPU_fdinfo::find_intel_gpu_rapl_power()
++{
++    // Do not assign a CPU graphics domain to an unrelated PCI graphics card.
++    // Integrated client GPUs use the processor PCI slot; multi-package systems
++    // need an explicit GPU-to-package mapping before this fallback can be used.
++    if (!intel_gpu_uses_package_zero())
++        return;
++
++    const uint64_t time_ns = os_time_get_nano();
++    if (intel_gpu_rapl_last_attempt_ns != 0 &&
++        time_ns - intel_gpu_rapl_last_attempt_ns < 1'000'000'000)
++        return;
++    intel_gpu_rapl_last_attempt_ns = time_ns;
++
++    std::string powercap = "/sys/class/powercap/";
++    auto powercap_dirs = ls(powercap.c_str());
++
++    for (auto& dir : powercap_dirs) {
++        auto path = powercap + dir;
++        auto name = read_line(path + "/name");
++
++        if (dir.find("intel-rapl:0:") != 0 || name != "uncore")
++            continue;
++
++        auto energy_path = path + "/energy_uj";
++        auto energy_stream = std::ifstream(energy_path);
++
++        if (!energy_stream.good()) {
++            SPDLOG_DEBUG(
++                "powercap: Intel GPU RAPL energy is not accessible at {}",
++                energy_path
++            );
++            continue;
++        }
++
++        intel_gpu_rapl_energy_stream = std::move(energy_stream);
++
++        parse_rapl_counter(read_line(path + "/max_energy_range_uj"),
++                           intel_gpu_rapl_max_energy_range_uj);
++
++        SPDLOG_DEBUG("powercap: using Intel GPU RAPL energy at {}", energy_path);
++        return;
++    }
++}
++
++bool GPU_fdinfo::read_intel_gpu_rapl_energy(uint64_t& energy_uj)
++{
++    if (!intel_gpu_rapl_energy_stream.is_open())
++        return false;
++
++    intel_gpu_rapl_energy_stream.clear();
++    intel_gpu_rapl_energy_stream.seekg(0);
++
++    std::string energy;
++    std::getline(intel_gpu_rapl_energy_stream, energy);
++
++    if (energy.empty())
++        return false;
++
++    return parse_rapl_counter(energy, energy_uj);
++}
++
++float GPU_fdinfo::get_intel_gpu_rapl_power_usage()
++{
++    uint64_t energy_uj = 0;
++    if (!read_intel_gpu_rapl_energy(energy_uj))
++        return -1.f;
++
++    return intel_gpu_rapl_sample.sample(energy_uj, os_time_get_nano(),
++                                       intel_gpu_rapl_max_energy_range_uj);
++}
++
++void GPU_fdinfo::find_intel_gpu_pmt_temperature()
++{
++    if (module != "xe" || !intel_gpu_uses_package_zero())
++        return;
++
++    const uint64_t time_ns = os_time_get_nano();
++    if (intel_gpu_pmt_last_attempt_ns != 0 &&
++        time_ns - intel_gpu_pmt_last_attempt_ns < 1'000'000'000)
++        return;
++    intel_gpu_pmt_last_attempt_ns = time_ns;
++
++    const std::string pmt = "/sys/class/intel_pmt/";
++    for (const auto& dir : ls(pmt.c_str())) {
++        const std::string path = pmt + dir;
++        std::string guid_text = read_line(path + "/guid");
++        if (guid_text.find("0x") == 0)
++            guid_text.erase(0, 2);
++        uint64_t guid = 0, size = 0;
++        auto parsed = std::from_chars(guid_text.data(), guid_text.data() + guid_text.size(), guid, 16);
++        if (parsed.ec != std::errc() || parsed.ptr != guid_text.data() + guid_text.size() ||
++            !parse_rapl_counter(read_line(path + "/size"), size) ||
++            !is_pantherlake_pmt(guid, size))
++            continue;
++
++        std::ifstream stream(path + "/telem", std::ios::binary);
++        if (!stream.is_open())
++            continue;
++        intel_gpu_pmt_temperature_stream = std::move(stream);
++        SPDLOG_DEBUG("PMT: using Panther Lake GT_MAX temperature at {}", path + "/telem");
++        return;
++    }
++}
++
++int GPU_fdinfo::get_intel_gpu_pmt_temperature()
++{
++    if (!intel_gpu_pmt_temperature_stream.is_open())
++        return -1;
++    intel_gpu_pmt_temperature_stream.clear();
++    intel_gpu_pmt_temperature_stream.seekg(127);
++    char temperature = 0;
++    if (!intel_gpu_pmt_temperature_stream.read(&temperature, 1))
++        return -1;
++    return pantherlake_gt_max_temperature(static_cast<unsigned char>(temperature));
++}
++
+ float GPU_fdinfo::get_power_usage()
+ {
+-    if (!hwmon_sensors["power"].filename.empty())
++    if (intel_gpu_rapl_energy_stream.is_open())
++        return get_intel_gpu_rapl_power_usage();
++
++    if (has_hwmon_sensor("power"))
+         return static_cast<float>(hwmon_sensors["power"].val) / 1'000'000;
+ 
++    if (!has_hwmon_sensor("energy"))
++        return -1.0f;
++
+     float now = hwmon_sensors["energy"].val;
+ 
+     // Initialize value for the first time, otherwise delta will be very large
+@@ -540,7 +702,7 @@ int GPU_fdinfo::get_gpu_clock()
+         return get_gpu_clock_mali();
+ 
+     if (!gpu_clock_stream.is_open())
+-        return 0;
++        return -1;
+ 
+     std::string clock_str;
+ 
+@@ -549,14 +711,14 @@ int GPU_fdinfo::get_gpu_clock()
+     std::getline(gpu_clock_stream, clock_str);
+ 
+     if (clock_str.empty())
+-        return 0;
++        return -1;
+ 
+     return std::stoi(clock_str);
+ }
+ 
+ int GPU_fdinfo::get_gpu_clock_mali() {
+     if (fdinfo_data.empty())
+-        return 0;
++        return -1;
+ 
+     std::string key;
+ 
+@@ -568,7 +730,7 @@ int GPU_fdinfo::get_gpu_clock_mali() {
+     std::string freq_str = fdinfo_data[0][key];
+ 
+     if (freq_str.empty())
+-        return 0;
++        return -1;
+ 
+     float freq = std::stoull(freq_str) / 1'000'000;
+ 
+@@ -688,7 +850,7 @@ int GPU_fdinfo::get_kgsl_temp() {
+     std::ifstream* s = &kgsl_streams["temp"];
+ 
+     if (!s->is_open())
+-        return 0;
++        return -1;
+ 
+     std::string temp_str;
+ 
+@@ -697,7 +859,7 @@ int GPU_fdinfo::get_kgsl_temp() {
+     std::getline(*s, temp_str);
+ 
+     if (temp_str.empty())
+-        return 0;
++        return -1;
+ 
+     return std::round(std::stoi(temp_str) / 1'000.f);
+ }
+@@ -726,26 +888,53 @@ void GPU_fdinfo::main_thread()
+         }
+ 
+         gather_fdinfo_data();
++        update_intel_memory_type();
++        if (intel_gpu_integrated && !intel_gpu_rapl_energy_stream.is_open() &&
++            !has_hwmon_sensor("energy") && !has_hwmon_sensor("power"))
++            find_intel_gpu_rapl_power();
++        if (intel_gpu_integrated && !has_hwmon_sensor("temp") &&
++            !intel_gpu_pmt_temperature_stream.is_open())
++            find_intel_gpu_pmt_temperature();
+         get_current_hwmon_readings();
+ 
+         metrics.load = get_gpu_load();
+-        metrics.proc_vram_used = get_memory_used();
++        const float memory_used = get_memory_used();
++        metrics.proc_vram_used = memory_used;
++        metrics.gtt_used = 0.0f;
++        if (intel_gpu_integrated)
++            metrics.gtt_used = memory_used;
+ 
+         metrics.powerUsage = get_power_usage();
+-        metrics.powerLimit = static_cast<float>(hwmon_sensors["power_limit"].val) / 1'000'000;
++        if (has_hwmon_sensor("power_limit"))
++            metrics.powerLimit = static_cast<float>(hwmon_sensors["power_limit"].val) / 1'000'000;
++        else
++            metrics.powerLimit = -1.0f;
+ 
+         metrics.CoreClock = get_gpu_clock();
+-        metrics.voltage = hwmon_sensors["voltage"].val;
++        if (has_hwmon_sensor("voltage"))
++            metrics.voltage = hwmon_sensors["voltage"].val;
++        else
++            metrics.voltage = -1;
+ 
+         if (module == "msm_drm")
+             metrics.temp = get_kgsl_temp();
+-        else
++        else if (has_hwmon_sensor("temp"))
+             metrics.temp = hwmon_sensors["temp"].val / 1000.f;
++        else
++            metrics.temp = get_intel_gpu_pmt_temperature();
+ 
+-        metrics.memory_temp = hwmon_sensors["vram_temp"].val / 1000.f;
+-
+-        metrics.fan_speed = hwmon_sensors["fan_speed"].val;
+-        metrics.fan_rpm = true; // Fan data is pulled from hwmon
++        if (has_hwmon_sensor("vram_temp"))
++            metrics.memory_temp = hwmon_sensors["vram_temp"].val / 1000.f;
++        else
++            metrics.memory_temp = -1;
++
++        if (has_hwmon_sensor("fan_speed")) {
++            metrics.fan_speed = hwmon_sensors["fan_speed"].val;
++            metrics.fan_rpm = true; // Fan data is pulled from hwmon
++        } else {
++            metrics.fan_speed = -1;
++            metrics.fan_rpm = false;
++        }
+ 
+         int throttling = get_throttling_status();
+         metrics.is_power_throttled = throttling & GPU_throttle_status::POWER;
+diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
+index 97e62e5..9abf9cd 100644
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -23,6 +23,7 @@
+ #include <filesystem.h>
+ 
+ #include "gpu_metrics_util.h"
++#include "rapl_energy.h"
+ 
+ struct hwmon_sensor {
+     std::regex rx;
+@@ -66,6 +67,7 @@ private:
+ 
+     std::vector<std::map<std::string, std::string>> fdinfo_data;
+     void gather_fdinfo_data();
++    void update_intel_memory_type();
+ 
+     void main_thread();
+ 
+@@ -86,10 +88,25 @@ private:
+     void find_hwmon_sensors();
+     std::string find_hwmon_dir();
+     std::string find_hwmon_sensor_dir(std::string name);
++    bool has_hwmon_sensor(const std::string& key) const;
+     void get_current_hwmon_readings();
+ 
+     float get_power_usage();
+     float last_power = 0;
++    std::atomic<bool> intel_gpu_integrated {false};
++    std::ifstream intel_gpu_rapl_energy_stream;
++    uint64_t intel_gpu_rapl_max_energy_range_uj = 0;
++    RaplEnergySample intel_gpu_rapl_sample;
++    uint64_t intel_gpu_rapl_last_attempt_ns = 0;
++    bool intel_gpu_uses_package_zero() const;
++    void find_intel_gpu_rapl_power();
++    bool read_intel_gpu_rapl_energy(uint64_t& energy_uj);
++    float get_intel_gpu_rapl_power_usage();
++
++    std::ifstream intel_gpu_pmt_temperature_stream;
++    uint64_t intel_gpu_pmt_last_attempt_ns = 0;
++    void find_intel_gpu_pmt_temperature();
++    int get_intel_gpu_pmt_temperature();
+ 
+     std::ifstream gpu_clock_stream;
+     void find_i915_gt_dir();
+@@ -156,21 +173,7 @@ public:
+             drm_memory_type = "drm-resident-memory";
+         }
+ 
+-        if (fdinfo_data.size() > 0 &&
+-            fdinfo_data[0].find(drm_memory_type) == fdinfo_data[0].end())
+-        {
+-            auto old_type = drm_memory_type;
+-
+-            if (module == "i915")
+-                drm_memory_type = "drm-resident-system0";
+-            else if (module == "xe")
+-                drm_memory_type = "drm-resident-gtt";
+-
+-            SPDLOG_DEBUG(
+-                "\"{}\" is not found, you probably have an integrated GPU. "
+-                "Using \"{}\"", old_type, drm_memory_type
+-            );
+-        }
++        update_intel_memory_type();
+ 
+         SPDLOG_DEBUG(
+             "drm_engine_type = {}, drm_memory_type = {}",
+@@ -208,6 +211,9 @@ public:
+ 
+         find_hwmon_sensors();
+ 
++        if (intel_gpu_integrated && !has_hwmon_sensor("energy") && !has_hwmon_sensor("power"))
++            find_intel_gpu_rapl_power();
++
+         if (module == "i915")
+             find_i915_gt_dir();
+         else if (module == "xe")
+@@ -242,4 +248,9 @@ public:
+     }
+ 
+     float amdgpu_helper_get_proc_vram();
++
++    bool uses_integrated_memory() const
++    {
++        return intel_gpu_integrated.load();
++    }
+ };
+diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
+index 8083591..776656b 100644
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -311,7 +311,10 @@ void HudElements::gpu_stats(){
+                 // ImGui::Text("%s", "%");
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_temp]){
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_temp] &&
++                gpu->metrics.temp > -1
++            ){
+                 ImguiNextColumnOrNewRow();
+                 if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                     right_aligned_text(text_color, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(gpu->metrics.temp));
+@@ -344,7 +347,11 @@ void HudElements::gpu_stats(){
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_fan] && !gpu->is_apu()){
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_fan] &&
++                gpu->metrics.fan_speed > -1 &&
++                !gpu->is_apu()
++            ){
+                 ImguiNextColumnOrNewRow();
+                 right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.fan_speed);
+                 ImGui::SameLine(0, 1.0f);
+@@ -360,7 +367,10 @@ void HudElements::gpu_stats(){
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_core_clock]){
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_core_clock] &&
++                gpu->metrics.CoreClock > -1
++            ){
+                 ImguiNextColumnOrNewRow();
+                 right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.CoreClock);
+                 ImGui::SameLine(0, 1.0f);
+@@ -369,7 +379,10 @@ void HudElements::gpu_stats(){
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power]) {
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power] &&
++                gpu->metrics.powerUsage > -1
++            ) {
+                 ImguiNextColumnOrNewRow();
+                 char str[16];
+                 snprintf(str, sizeof(str), "%.1f", gpu->metrics.powerUsage);
+@@ -379,14 +392,20 @@ void HudElements::gpu_stats(){
+                     right_aligned_text(text_color, HUDElements.ralign_width, "%.1f", gpu->metrics.powerUsage);
+                 ImGui::SameLine(0, 1.0f);
+                 ImGui::PushFont(HUDElements.sw_stats->font_small);
+-                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power_limit])
++                if (
++                    HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power_limit] &&
++                    gpu->metrics.powerLimit > 0
++                )
+                     HUDElements.TextColored(HUDElements.colors.text, "/%.0fW", gpu->metrics.powerLimit);
+                 else
+                     HUDElements.TextColored(HUDElements.colors.text, "W");
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_efficiency]) {
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_efficiency] &&
++                gpu->metrics.powerUsage > 0
++            ) {
+                 ImguiNextColumnOrNewRow();
+                 float efficiency;
+                 const char* efficiency_unit;
+@@ -404,7 +423,10 @@ void HudElements::gpu_stats(){
+                 ImGui::PopFont();
+             }
+ 
+-            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_voltage]) {
++            if (
++                HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_voltage] &&
++                gpu->metrics.voltage > -1
++            ) {
+                 ImguiNextColumnOrNewRow();
+                 right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.voltage);
+                 ImGui::SameLine(0, 1.0f);
+@@ -647,11 +669,11 @@ void HudElements::vram(){
+                 HUDElements.TextColored(HUDElements.colors.vram, gpu->vram_text().c_str());
+ 
+                 ImguiNextColumnOrNewRow();
+-                // Add gtt_used to vram usage for APUs
+-                if (gpu->is_apu())
+-                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", gpu->metrics.sys_vram_used + gpu->metrics.gtt_used);
+-                else
+-                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", gpu->metrics.sys_vram_used);
++                // Add shared memory usage for APUs and Intel integrated GPUs.
++                float vram_used = gpu->metrics.sys_vram_used;
++                if (gpu->is_apu() || gpu->uses_integrated_memory())
++                    vram_used += gpu->metrics.gtt_used;
++                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", vram_used);
+                 if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+                     ImGui::SameLine(0,1.0f);
+                     ImGui::PushFont(HUDElements.sw_stats->font_small);
+@@ -672,7 +694,10 @@ void HudElements::vram(){
+                         HUDElements.TextColored(HUDElements.colors.text, "°C");
+                 }
+ 
+-                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_clock]){
++                if (
++                    HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_clock] &&
++                    gpu->metrics.MemClock > 0
++                ){
+                     ImguiNextColumnOrNewRow();
+                     right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", gpu->metrics.MemClock);
+                     ImGui::SameLine(0, 1.0f);
+@@ -723,7 +748,8 @@ void HudElements::proc_vram() {
+         // show only if vram is not enabled
+         if (
+             !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_vram] &&
+-            HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_temp]
++            HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_temp] &&
++            gpu->metrics.memory_temp > -1
+         ) {
+             ImguiNextColumnOrNewRow();
+ 
+diff --git a/src/intel_fdinfo_memory.h b/src/intel_fdinfo_memory.h
+new file mode 100644
+index 0000000..1a41405
+--- /dev/null
++++ b/src/intel_fdinfo_memory.h
+@@ -0,0 +1,32 @@
++#pragma once
++
++#include <map>
++#include <string>
++#include <vector>
++
++inline bool fdinfo_has_value(
++    const std::vector<std::map<std::string, std::string>>& records,
++    const std::string& key)
++{
++    for (const auto& record : records) {
++        auto value = record.find(key);
++        if (value != record.end() && !value->second.empty())
++            return true;
++    }
++    return false;
++}
++
++inline std::string intel_shared_memory_key(
++    const std::string& driver,
++    const std::vector<std::map<std::string, std::string>>& records)
++{
++    const std::string local = driver == "xe" ? "drm-resident-vram0" :
++                              driver == "i915" ? "drm-resident-local0" : "";
++    const std::string shared = driver == "xe" ? "drm-resident-gtt" :
++                               driver == "i915" ? "drm-resident-system0" : "";
++    if (local.empty() || fdinfo_has_value(records, local) ||
++        !fdinfo_has_value(records, shared))
++        return "";
++
++    return shared;
++}
+diff --git a/src/intel_pmt.h b/src/intel_pmt.h
+new file mode 100644
+index 0000000..2c97b3a
+--- /dev/null
++++ b/src/intel_pmt.h
+@@ -0,0 +1,17 @@
++#pragma once
++
++#include <cstdint>
++
++// Intel-PMT XML PTL/0: Container_15, GT_MAX, bits 56..63, S8.7.0 Celsius.
++// Match the complete layout before interpreting any raw telemetry byte.
++inline bool is_pantherlake_pmt(uint64_t guid, uint64_t size)
++{
++    return guid == 0x03086000 && size == 3352;
++}
++
++inline int pantherlake_gt_max_temperature(unsigned char raw)
++{
++    const int temperature = raw < 128 ? raw : static_cast<int>(raw) - 256;
++    // Implausible samples must not be displayed as a real temperature.
++    return temperature >= 0 && temperature <= 125 ? temperature : -1;
++}
+diff --git a/src/logging.h b/src/logging.h
+index 62d34c7..2b695d5 100644
+--- a/src/logging.h
++++ b/src/logging.h
+@@ -24,7 +24,7 @@ struct logData{
+   int gpu_temp;
+   int gpu_core_clock;
+   int gpu_mem_clock;
+-  int gpu_power;
++  float gpu_power;
+   float gpu_vram_used;
+   float ram_used;
+   float swap_used;
+diff --git a/src/rapl_energy.h b/src/rapl_energy.h
+new file mode 100644
+index 0000000..11abfb3
+--- /dev/null
++++ b/src/rapl_energy.h
+@@ -0,0 +1,93 @@
++#pragma once
++
++#include <algorithm>
++#include <charconv>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++// Failed discovery can happen before sensor permissions or devices are ready.
++// Retry without scanning all sysfs devices on every overlay frame.
++class RaplDiscoveryRetry {
++    uint64_t last_attempt_ns = 0;
++    bool attempted = false;
++
++public:
++    bool should_attempt(uint64_t time_ns)
++    {
++        if (attempted && time_ns >= last_attempt_ns &&
++            time_ns - last_attempt_ns < 1'000'000'000)
++            return false;
++        last_attempt_ns = time_ns;
++        attempted = true;
++        return true;
++    }
++};
++
++// MSR and MMIO can both be named package-0. Prefer the MSR energy counter,
++// and continue after an unreadable candidate instead of accepting directory
++// enumeration order. Metadata and open operations are injected for regression
++// testing; production uses the real sysfs name and fopen result.
++template <typename ReadName, typename TryOpen>
++auto find_package_zero_rapl_counter(std::vector<std::string> zones,
++                                   ReadName read_name, TryOpen try_open)
++    -> decltype(try_open(std::string{}))
++{
++    std::stable_sort(zones.begin(), zones.end(),
++        [](const std::string& left, const std::string& right) {
++            return left.find("intel-rapl:") == 0 &&
++                   right.find("intel-rapl:") != 0;
++        });
++    for (const auto& zone : zones) {
++        if (read_name(zone) != "package-0")
++            continue;
++        if (auto counter = try_open(zone))
++            return counter;
++    }
++    return {};
++}
++
++// RAPL counters are microjoules; timestamps must use a monotonic clock.
++class RaplEnergySample {
++    uint64_t last_energy_uj = 0;
++    uint64_t last_time_ns = 0;
++    bool initialized = false;
++
++public:
++    float sample(uint64_t energy_uj, uint64_t time_ns, uint64_t max_energy_range_uj)
++    {
++        const uint64_t previous_energy = last_energy_uj;
++        const uint64_t previous_time = last_time_ns;
++        const bool first_sample = !initialized;
++        last_energy_uj = energy_uj;
++        last_time_ns = time_ns;
++        initialized = true;
++
++        if (first_sample || time_ns <= previous_time)
++            return 0.f;
++
++        uint64_t delta_uj = 0;
++        if (energy_uj >= previous_energy) {
++            delta_uj = energy_uj - previous_energy;
++        } else if (max_energy_range_uj > 0 &&
++                   previous_energy <= max_energy_range_uj &&
++                   energy_uj <= max_energy_range_uj) {
++            delta_uj = max_energy_range_uj - previous_energy + energy_uj;
++        } else {
++            // A counter reset without a known range needs a new baseline.
++            return 0.f;
++        }
++
++        return static_cast<float>(static_cast<double>(delta_uj) * 1000.0 /
++                                  static_cast<double>(time_ns - previous_time));
++    }
++};
++
++inline bool parse_rapl_counter(const std::string& text, uint64_t& result)
++{
++    if (text.empty())
++        return false;
++
++    auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
++    return parsed.ec == std::errc() && parsed.ptr == text.data() + text.size();
++}

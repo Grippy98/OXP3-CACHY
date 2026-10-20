@@ -1,0 +1,9 @@
+# Why EDID segment-zero recovery is needed
+
+EDID blocks are 128 bytes. The DDC segment register selects each 256-byte window, while the ordinary offset selects a block within that window. The existing helper omits a segment write for blocks 0/1 because some sinks reject that address. On the tested converter, reading block 2 leaves segment 1 selected; a later successful base read returns that extension instead of block 0. Transport success alone therefore does not guarantee a usable EDID.
+
+The candidate writes segment zero only after a full, successful two-message base read with zero matching header bytes. It reuses the remaining existing retry budget, preserves ENXIO termination and leaves validation above the transport helper. It deliberately does not rewrite valid/repairable headers, probe reads or the general extension path. A noncompliant sink may still dislike the extra segment transaction, which is why this remains a narrow local candidate pending upstream review.
+
+The automatic workaround operates above that transport: firmware supplies a connector-scoped known-good EDID. It validates and saves the destination user's own LG TV data, includes it in the initramfs and adds a dedicated startup argument. That prevents capability loss but freezes this connector's identity until rollback; disable it before connecting another display. It does not repair dock firmware or dynamically discover a changed TV.
+
+Three forced reprobes proved native recovery on the original hardware. A later TV cycle retained 4K144/HDR but made no fresh I²C read. The 21-case synthetic host suite independently covers the state machine and retry limits. [README](README.md) distinguishes that tested status from the new portable workaround adapter; [source/build pins](docs/SOURCES.md) and [manual build](docs/BUILD.md) retain the kernel/upstream path without distributing personal display data.

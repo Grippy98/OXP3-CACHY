@@ -1,0 +1,790 @@
+diff --git a/CONFIG.md b/CONFIG.md
+index 1e7cb87..64f00d8 100644
+--- a/CONFIG.md
++++ b/CONFIG.md
+@@ -172,6 +172,17 @@ Miscellaneous:
+   the scroll wheel moves the selection. Using the mouse stops the `timeout`
+   countdown, as pressing a key does. On BIOS this uses the PS/2 (or emulated
+   PS/2) mouse; on UEFI any pointer device the firmware exposes.
++* `gamepad` - If set to `yes`, enable experimental UEFI Xbox 360 controller
++  input in the boot menu. Defaults to `no`. Supports USB `045e:028e`,
++  interface 0 (`ff/5d/01`), interrupt input endpoint `0x81` with 32-byte
++  packets, when the firmware exposes an unclaimed USB IO protocol. D-pad
++  up/down and the vertical left stick move the selection. D-pad right
++  expands directories; D-pad left or B collapses a directory or its parent.
++  A selects an entry. A and B never repeat. A neutral mapped report is
++  required after the menu opens, so release held buttons before navigating.
++  Input stops the `timeout` countdown. Keyboard and mouse input remain
++  available; the entry editor uses keyboard input. This option does not
++  change controller firmware or its operating mode.
+ 
+ Limine interface control options:
+ 
+diff --git a/common/drivers/gamepad.c b/common/drivers/gamepad.c
+new file mode 100644
+index 0000000..d7b8fb6
+--- /dev/null
++++ b/common/drivers/gamepad.c
+@@ -0,0 +1,176 @@
++#include <drivers/gamepad.h>
++
++#if defined (UEFI)
++#include <drivers/gamepad_state.h>
++#include <drivers/gamepad_usb.h>
++#include <lib/config.h>
++#include <lib/libc.h>
++#include <lib/misc.h>
++
++static EFI_GUID usb_io_guid =
++    {0x2b2f68d6, 0x0cd2, 0x44cf, {0x8e, 0x8b, 0xbb, 0xa2, 0x0b, 0x1b, 0x5b, 0x75}};
++
++// This context must survive the menu's data rewind. Callbacks only touch
++// static memory, and are cancelled before any image memory can be released.
++static no_unwind struct {
++    struct gamepad_usb_io *usb;
++    EFI_HANDLE handle;
++    EFI_EVENT timer;
++    bool active;
++    bool submitted;
++    bool failed;
++    struct gamepad_state state;
++} pad;
++
++static EFI_STATUS EFIAPI report_callback(void *data, UINTN length, void *context, UINT32 status) {
++    (void)context;
++    if (!pad.active) {
++        return EFI_SUCCESS;
++    }
++    if (status != 0) {
++        pad.failed = true;
++        gamepad_state_reset(&pad.state);
++    } else if (!pad.failed) {
++        gamepad_state_report(&pad.state, data, length);
++    }
++    return EFI_SUCCESS;
++}
++
++void gamepad_deinit(void) {
++    if (efi_boot_services_exited || pad.usb == NULL) {
++        return;
++    }
++
++    EFI_TPL old_tpl = gBS->RaiseTPL(TPL_NOTIFY);
++    pad.active = false;
++    gamepad_state_reset(&pad.state);
++    gBS->RestoreTPL(old_tpl);
++
++    if (pad.submitted) {
++        EFI_STATUS status = pad.usb->async_interrupt_transfer(pad.usb, 0x81, FALSE,
++                                                              0, 0, NULL, NULL);
++        if (status != EFI_SUCCESS) {
++            // An inactive static context prevents further input, but cannot
++            // make unloading code with an outstanding callback safe.
++            panic(false, "gamepad: Cannot cancel USB input; refusing handoff");
++        }
++        pad.submitted = false;
++    }
++    if (pad.timer != NULL) {
++        gBS->SetTimer(pad.timer, TimerCancel, 0);
++        gBS->CloseEvent(pad.timer);
++        pad.timer = NULL;
++    }
++    gBS->CloseProtocol(pad.handle, &usb_io_guid, efi_image_handle, pad.handle);
++    pad.usb = NULL;
++    pad.handle = NULL;
++    pad.failed = false;
++}
++
++static bool matches(struct gamepad_usb_io *usb) {
++    struct gamepad_usb_device_descriptor device;
++    struct gamepad_usb_interface_descriptor interface;
++    struct gamepad_usb_endpoint_descriptor endpoint;
++    if (usb->get_device_descriptor(usb, &device) != EFI_SUCCESS
++     || device.length != 18 || device.type != 1
++     || device.vendor != 0x045e || device.product != 0x028e
++     || usb->get_interface_descriptor(usb, &interface) != EFI_SUCCESS
++     || interface.length != 9 || interface.type != 4
++     || interface.number != 0 || interface.alternate != 0
++     || interface.interface_class != 0xff || interface.subclass != 0x5d
++     || interface.protocol != 1) {
++        return false;
++    }
++    for (UINT8 i = 0; i < interface.endpoints; i++) {
++        if (usb->get_endpoint_descriptor(usb, i, &endpoint) == EFI_SUCCESS
++         && endpoint.length == 7 && endpoint.type == 5
++         && endpoint.address == 0x81 && (endpoint.attributes & 3) == 3
++         && endpoint.max_packet_size == 32) {
++            return true;
++        }
++    }
++    return false;
++}
++
++bool gamepad_init(void) {
++    if (efi_boot_services_exited) {
++        return false;
++    }
++    if (pad.active && !pad.failed) {
++        return true;
++    }
++    gamepad_deinit();
++    char *enabled = config_get_value(NULL, 0, "gamepad");
++    if (enabled == NULL || strcasecmp(enabled, "yes") != 0) {
++        return false;
++    }
++
++    EFI_HANDLE *handles = NULL;
++    UINTN count = 0;
++    if (gBS->LocateHandleBuffer(ByProtocol, &usb_io_guid, NULL, &count, &handles) != EFI_SUCCESS) {
++        return false;
++    }
++    for (UINTN i = 0; i < count; i++) {
++        struct gamepad_usb_io *usb = NULL;
++        if (gBS->HandleProtocol(handles[i], &usb_io_guid, (void **)&usb) != EFI_SUCCESS
++         || !matches(usb)) {
++            continue;
++        }
++        // A firmware driver already owning this interface is left alone.
++        // Never disconnect drivers or request exclusive ownership.
++        if (gBS->OpenProtocol(handles[i], &usb_io_guid, (void **)&usb,
++                              efi_image_handle, handles[i], EFI_OPEN_PROTOCOL_BY_DRIVER) != EFI_SUCCESS) {
++            continue;
++        }
++        pad.usb = usb;
++        pad.handle = handles[i];
++        gamepad_state_reset(&pad.state);
++        if (gBS->CreateEvent(EVT_TIMER, TPL_CALLBACK, NULL, NULL, &pad.timer) != EFI_SUCCESS
++         || gBS->SetTimer(pad.timer, TimerPeriodic, 200000) != EFI_SUCCESS) {
++            gamepad_deinit();
++            continue;
++        }
++        pad.active = true;
++        EFI_STATUS status = usb->async_interrupt_transfer(usb, 0x81, TRUE, 8, 32,
++                                                          report_callback, NULL);
++        if (status != EFI_SUCCESS) {
++            gamepad_deinit();
++            continue;
++        }
++        pad.submitted = true;
++        break;
++    }
++    gBS->FreePool(handles);
++    return pad.active;
++}
++
++EFI_EVENT gamepad_get_efi_event(void) {
++    return pad.active ? pad.timer : NULL;
++}
++
++int gamepad_poll(bool timer_tick) {
++    if (!pad.active) {
++        return 0;
++    }
++    EFI_TPL old_tpl = gBS->RaiseTPL(TPL_NOTIFY);
++    bool failed = pad.failed;
++    int key = failed ? 0 : gamepad_state_next(&pad.state, timer_tick ? 20 : 0);
++    gBS->RestoreTPL(old_tpl);
++    if (failed) {
++        gamepad_deinit();
++    }
++    return key;
++}
++#else
++bool gamepad_init(void) {
++    return false;
++}
++
++void gamepad_deinit(void) {
++}
++
++int gamepad_poll(bool timer_tick) {
++    (void)timer_tick;
++    return 0;
++}
++#endif
+diff --git a/common/drivers/gamepad.h b/common/drivers/gamepad.h
+new file mode 100644
+index 0000000..40d0581
+--- /dev/null
++++ b/common/drivers/gamepad.h
+@@ -0,0 +1,15 @@
++#ifndef DRIVERS__GAMEPAD_H__
++#define DRIVERS__GAMEPAD_H__
++
++#include <stdbool.h>
++
++bool gamepad_init(void);
++void gamepad_deinit(void);
++int gamepad_poll(bool timer_tick);
++
++#if defined (UEFI)
++#include <efi.h>
++EFI_EVENT gamepad_get_efi_event(void);
++#endif
++
++#endif
+diff --git a/common/drivers/gamepad_state.c b/common/drivers/gamepad_state.c
+new file mode 100644
+index 0000000..7362b28
+--- /dev/null
++++ b/common/drivers/gamepad_state.c
+@@ -0,0 +1,105 @@
++#include <drivers/gamepad_state.h>
++#include <lib/getchar.h>
++
++static void enqueue(struct gamepad_state *state, int key) {
++    if (state->queue_count == GAMEPAD_QUEUE_SIZE) {
++        // A full queue must never acquire a delayed confirmation.
++        return;
++    }
++    size_t tail = (state->queue_head + state->queue_count) % GAMEPAD_QUEUE_SIZE;
++    state->queue[tail] = key;
++    state->queue_count++;
++}
++
++void gamepad_state_reset(struct gamepad_state *state) {
++    *state = (struct gamepad_state){0};
++}
++
++bool gamepad_state_report(struct gamepad_state *state, const void *data, size_t length) {
++    const uint8_t *report = data;
++    if (report == NULL || length < 20 || length > 32
++     || report[0] != 0 || report[1] != 20) {
++        return false;
++    }
++
++    uint16_t buttons = report[2] | (uint16_t)report[3] << 8;
++    int y = report[8] | (unsigned int)report[9] << 8;
++    if (y >= 32768) {
++        y -= 65536;
++    }
++
++    // Only vertical stick motion navigates; horizontal motion cannot boot.
++    if (y >= 12000) {
++        state->stick_direction = GETCHAR_CURSOR_UP;
++    } else if (y <= -12000) {
++        state->stick_direction = GETCHAR_CURSOR_DOWN;
++    } else if ((state->stick_direction == GETCHAR_CURSOR_UP && y < 8000)
++            || (state->stick_direction == GETCHAR_CURSOR_DOWN && y > -8000)) {
++        state->stick_direction = 0;
++    }
++
++    int direction = state->stick_direction;
++    if ((buttons & 3) == 1) {
++        direction = GETCHAR_CURSOR_UP;
++    } else if ((buttons & 3) == 2) {
++        direction = GETCHAR_CURSOR_DOWN;
++    } else if ((buttons & 3) == 3) {
++        direction = 0;
++    } else if ((buttons & 12) == 4) {
++        direction = GETCHAR_GAMEPAD_BACK;
++    } else if ((buttons & 12) == 8) {
++        direction = GETCHAR_GAMEPAD_EXPAND;
++    } else if ((buttons & 12) == 12) {
++        direction = 0;
++    }
++
++    // Require a neutral mapped report after initialisation or disconnection.
++    // A button held while the menu opens must not select an entry.
++    if (!state->armed) {
++        state->buttons = buttons;
++        if ((buttons & 0x300f) == 0 && direction == 0) {
++            state->armed = true;
++        }
++        return true;
++    }
++
++    if (direction != state->direction) {
++        state->direction = direction;
++        state->repeat_ms = 400;
++        if (direction != 0) {
++            enqueue(state, direction);
++        }
++    }
++
++    uint16_t pressed = buttons & ~state->buttons;
++    // Reject simultaneous A/B; neither confirmation nor back should win.
++    if ((buttons & 0x3000) == 0x1000 && (pressed & 0x1000) != 0) {
++        enqueue(state, '\n');
++    } else if ((buttons & 0x3000) == 0x2000 && (pressed & 0x2000) != 0) {
++        enqueue(state, GETCHAR_GAMEPAD_BACK);
++    }
++    state->buttons = buttons;
++    return true;
++}
++
++int gamepad_state_next(struct gamepad_state *state, unsigned int elapsed_ms) {
++    if (state->armed && state->direction != 0) {
++        if (elapsed_ms >= state->repeat_ms) {
++            state->repeat_ms = 120;
++            // Only repeat vertical navigation, never confirmation or back.
++            if (state->direction == GETCHAR_CURSOR_UP
++             || state->direction == GETCHAR_CURSOR_DOWN) {
++                enqueue(state, state->direction);
++            }
++        } else {
++            state->repeat_ms -= elapsed_ms;
++        }
++    }
++    if (state->queue_count == 0) {
++        return 0;
++    }
++    int key = state->queue[state->queue_head];
++    state->queue_head = (state->queue_head + 1) % GAMEPAD_QUEUE_SIZE;
++    state->queue_count--;
++    return key;
++}
+diff --git a/common/drivers/gamepad_state.h b/common/drivers/gamepad_state.h
+new file mode 100644
+index 0000000..9f423e1
+--- /dev/null
++++ b/common/drivers/gamepad_state.h
+@@ -0,0 +1,25 @@
++#ifndef DRIVERS__GAMEPAD_STATE_H__
++#define DRIVERS__GAMEPAD_STATE_H__
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define GAMEPAD_QUEUE_SIZE 8
++
++struct gamepad_state {
++    bool armed;
++    uint16_t buttons;
++    int stick_direction;
++    int direction;
++    unsigned int repeat_ms;
++    int queue[GAMEPAD_QUEUE_SIZE];
++    size_t queue_head;
++    size_t queue_count;
++};
++
++void gamepad_state_reset(struct gamepad_state *state);
++bool gamepad_state_report(struct gamepad_state *state, const void *data, size_t length);
++int gamepad_state_next(struct gamepad_state *state, unsigned int elapsed_ms);
++
++#endif
+diff --git a/common/drivers/gamepad_usb.h b/common/drivers/gamepad_usb.h
+new file mode 100644
+index 0000000..27a38c8
+--- /dev/null
++++ b/common/drivers/gamepad_usb.h
+@@ -0,0 +1,56 @@
++#ifndef DRIVERS__GAMEPAD_USB_H__
++#define DRIVERS__GAMEPAD_USB_H__
++
++#include <efi.h>
++#include <stddef.h>
++
++// EFI_USB_IO_PROTOCOL ABI from UEFI 2.11 section 17.2. PicoEFI does not
++// provide it. Unused methods remain function-pointer slots, in ABI order.
++struct gamepad_usb_device_descriptor {
++    UINT8 length, type;
++    UINT16 usb_version;
++    UINT8 device_class, device_subclass, device_protocol, max_packet_size;
++    UINT16 vendor, product, device_version;
++    UINT8 manufacturer, product_string, serial, configurations;
++} __attribute__((packed));
++
++struct gamepad_usb_interface_descriptor {
++    UINT8 length, type, number, alternate, endpoints;
++    UINT8 interface_class, subclass, protocol, interface_string;
++} __attribute__((packed));
++
++struct gamepad_usb_endpoint_descriptor {
++    UINT8 length, type, address, attributes;
++    UINT16 max_packet_size;
++    UINT8 interval;
++} __attribute__((packed));
++
++struct gamepad_usb_io;
++
++typedef EFI_STATUS (EFIAPI *gamepad_usb_callback)(void *, UINTN, void *, UINT32);
++
++struct gamepad_usb_io {
++    EFI_STATUS (EFIAPI *control_transfer)(void);
++    EFI_STATUS (EFIAPI *bulk_transfer)(void);
++    EFI_STATUS (EFIAPI *async_interrupt_transfer)(struct gamepad_usb_io *, UINT8,
++                                                 BOOLEAN, UINTN, UINTN,
++                                                 gamepad_usb_callback, void *);
++    EFI_STATUS (EFIAPI *sync_interrupt_transfer)(void);
++    EFI_STATUS (EFIAPI *isochronous_transfer)(void);
++    EFI_STATUS (EFIAPI *async_isochronous_transfer)(void);
++    EFI_STATUS (EFIAPI *get_device_descriptor)(struct gamepad_usb_io *, struct gamepad_usb_device_descriptor *);
++    EFI_STATUS (EFIAPI *get_config_descriptor)(void);
++    EFI_STATUS (EFIAPI *get_interface_descriptor)(struct gamepad_usb_io *, struct gamepad_usb_interface_descriptor *);
++    EFI_STATUS (EFIAPI *get_endpoint_descriptor)(struct gamepad_usb_io *, UINT8, struct gamepad_usb_endpoint_descriptor *);
++    EFI_STATUS (EFIAPI *get_string_descriptor)(void);
++    EFI_STATUS (EFIAPI *get_supported_languages)(void);
++    EFI_STATUS (EFIAPI *port_reset)(void);
++};
++
++_Static_assert(sizeof(struct gamepad_usb_device_descriptor) == 18, "USB device descriptor ABI");
++_Static_assert(sizeof(struct gamepad_usb_interface_descriptor) == 9, "USB interface descriptor ABI");
++_Static_assert(sizeof(struct gamepad_usb_endpoint_descriptor) == 7, "USB endpoint descriptor ABI");
++_Static_assert(offsetof(struct gamepad_usb_io, async_interrupt_transfer) == 2 * sizeof(void (*)(void)), "USB async method ABI");
++_Static_assert(offsetof(struct gamepad_usb_io, get_endpoint_descriptor) == 9 * sizeof(void (*)(void)), "USB endpoint method ABI");
++
++#endif
+diff --git a/common/lib/getchar.c b/common/lib/getchar.c
+index f04f5aa..a0b4210 100644
+--- a/common/lib/getchar.c
++++ b/common/lib/getchar.c
+@@ -12,6 +12,7 @@
+ #  include <efi.h>
+ #endif
+ #include <drivers/mouse.h>
++#include <drivers/gamepad.h>
+ #include <drivers/serial.h>
+ #include <sys/cpu.h>
+ 
+@@ -399,7 +400,10 @@ static int sleep_ms_core(uint64_t milliseconds, bool deliver_mouse) {
+ 
+     UINTN which;
+ 
+-    EFI_EVENT events[18];
++    EFI_EVENT events[19];
++    EFI_EVENT timeout_event;
++    EFI_EVENT keyboard_event = NULL;
++    EFI_EVENT pointer_events[16];
+ 
+     size_t pointer_count = 0;
+ 
+@@ -420,47 +424,89 @@ static int sleep_ms_core(uint64_t milliseconds, bool deliver_mouse) {
+         if (gBS->HandleProtocol(gST->ConsoleInHandle, &sproto_guid, (void **)&sproto) != EFI_SUCCESS) {
+             if (gST->ConIn != NULL) {
+                 sproto = gST->ConIn;
+-            } else {
++            } else if (gamepad_get_efi_event() == NULL) {
+                 panic(false, "Your input device doesn't have an input protocol!");
+             }
+         }
+ 
+-        events[0] = sproto->WaitForKey;
++        if (sproto != NULL) {
++            keyboard_event = sproto->WaitForKey;
++        }
+ 
+         use_sproto = true;
+     } else {
+-        events[0] = exproto->WaitForKeyEx;
++        keyboard_event = exproto->WaitForKeyEx;
+     }
+ 
+     if (deliver_mouse) {
+-        pointer_count = mouse_get_efi_events(&events[2], 16);
++        pointer_count = mouse_get_efi_events(pointer_events, 16);
+     }
+ 
+ restart:
+-    gBS->CreateEvent(EVT_TIMER, TPL_CALLBACK, NULL, NULL, &events[1]);
++    gBS->CreateEvent(EVT_TIMER, TPL_CALLBACK, NULL, NULL, &timeout_event);
+ 
+-    gBS->SetTimer(events[1], TimerRelative,
++    gBS->SetTimer(timeout_event, TimerRelative,
+                   milliseconds > UINT64_MAX / 10000 ? UINT64_MAX : milliseconds * 10000);
+ 
+ again:
+     memset(&kd, 0, sizeof(EFI_KEY_DATA));
+ 
+-    gBS->WaitForEvent(2 + pointer_count, events, &which);
++    int gamepad_key = gamepad_poll(false);
++    if (gamepad_key != 0) {
++        gBS->CloseEvent(timeout_event);
++        return gamepad_key;
++    }
++
++    // Rebuild the indexes after a disconnect closes the controller timer.
++    // Keep this call's timeout alive across idle/noisy controller reports.
++    UINTN event_count = 0;
++    UINTN keyboard_index = (UINTN)-1;
++    if (keyboard_event != NULL) {
++        keyboard_index = event_count;
++        events[event_count++] = keyboard_event;
++    }
++    UINTN timeout_index = event_count;
++    events[event_count++] = timeout_event;
++    UINTN pointer_index = event_count;
++    for (size_t i = 0; i < pointer_count; i++) {
++        events[event_count++] = pointer_events[i];
++    }
++    UINTN gamepad_index = (UINTN)-1;
++    EFI_EVENT gamepad_event = gamepad_get_efi_event();
++    if (gamepad_event != NULL) {
++        gamepad_index = event_count;
++        events[event_count++] = gamepad_event;
++    }
++
++    gBS->WaitForEvent(event_count, events, &which);
+ 
+-    if (which == 1) {
+-        gBS->CloseEvent(events[1]);
++    if (which == timeout_index) {
++        gBS->CloseEvent(timeout_event);
+         return 0;
+     }
+ 
+-    if (which >= 2) {
+-        int ev = mouse_handle_efi_event(which - 2);
++    if (which == gamepad_index) {
++        gamepad_key = gamepad_poll(true);
++        if (gamepad_key != 0) {
++            gBS->CloseEvent(timeout_event);
++            return gamepad_key;
++        }
++        goto again;
++    }
++
++    if (which >= pointer_index && which < pointer_index + pointer_count) {
++        int ev = mouse_handle_efi_event(which - pointer_index);
+         if (ev != 0) {
+-            gBS->CloseEvent(events[1]);
++            gBS->CloseEvent(timeout_event);
+             return GETCHAR_MOUSE;
+         }
+         goto again;
+     }
+ 
++    if (which != keyboard_index) {
++        goto again;
++    }
++
+     EFI_STATUS status;
+     if (use_sproto) {
+         status = sproto->ReadKeyStroke(sproto, &kd.Key);
+@@ -477,21 +523,22 @@ again:
+     }
+ 
+     if (serial == true && kd.Key.ScanCode == 0x08) {
+-        gBS->CloseEvent(events[1]);
++        gBS->CloseEvent(timeout_event);
+         return '\b';
+     }
+ 
+     if (kd.Key.ScanCode == SCAN_ESC) {
+-        gBS->CloseEvent(events[1]);
++        gBS->CloseEvent(timeout_event);
+ 
+-        gBS->CreateEvent(EVT_TIMER, TPL_CALLBACK, NULL, NULL, &events[1]);
++        gBS->CreateEvent(EVT_TIMER, TPL_CALLBACK, NULL, NULL, &timeout_event);
+ 
+-        gBS->SetTimer(events[1], TimerRelative, 100000);
++        gBS->SetTimer(timeout_event, TimerRelative, 100000);
+ 
+-        gBS->WaitForEvent(2, events, &which);
++        EFI_EVENT escape_events[2] = {keyboard_event, timeout_event};
++        gBS->WaitForEvent(2, escape_events, &which);
+ 
+         if (which == 1) {
+-            gBS->CloseEvent(events[1]);
++            gBS->CloseEvent(timeout_event);
+             return GETCHAR_ESCAPE;
+         }
+ 
+@@ -501,7 +548,7 @@ again:
+             status = exproto->ReadKeyStrokeEx(exproto, &kd);
+         }
+ 
+-        gBS->CloseEvent(events[1]);
++        gBS->CloseEvent(timeout_event);
+ 
+         if (status != EFI_SUCCESS) {
+             goto restart;
+@@ -521,7 +568,7 @@ again:
+         goto again;
+     }
+ 
+-    gBS->CloseEvent(events[1]);
++    gBS->CloseEvent(timeout_event);
+     return ret;
+ }
+ 
+diff --git a/common/lib/getchar.h b/common/lib/getchar.h
+index 53dd361..33cafe3 100644
+--- a/common/lib/getchar.h
++++ b/common/lib/getchar.h
+@@ -15,6 +15,8 @@
+ #define GETCHAR_F10          (-19)
+ #define GETCHAR_ESCAPE       (-20)
+ #define GETCHAR_MOUSE        (-30)
++#define GETCHAR_GAMEPAD_BACK (-31)
++#define GETCHAR_GAMEPAD_EXPAND (-32)
+ 
+ #if defined (BIOS)
+ #   define GETCHAR_RCTRL 0x4
+diff --git a/common/lib/misc.c b/common/lib/misc.c
+index ef03917..8e8c063 100644
+--- a/common/lib/misc.c
++++ b/common/lib/misc.c
+@@ -14,6 +14,7 @@
+ #include <lib/tpm.h>
+ #include <fs/file.h>
+ #include <mm/pmm.h>
++#include <drivers/gamepad.h>
+ #include <libfdt.h>
+ 
+ #if defined (UEFI)
+@@ -394,6 +395,7 @@ error:
+ no_unwind bool efi_boot_services_exited = false;
+ 
+ bool efi_exit_boot_services(void) {
++    gamepad_deinit();
+     EFI_STATUS status;
+ 
+     // Pull entropy from EFI_RNG_PROTOCOL while it's still callable and
+diff --git a/common/lib/panic.s2.c b/common/lib/panic.s2.c
+index bb9130c..2868f15 100644
+--- a/common/lib/panic.s2.c
++++ b/common/lib/panic.s2.c
+@@ -14,6 +14,7 @@
+ #include <mm/pmm.h>
+ #include <menu.h>
+ #include <drivers/mouse.h>
++#include <drivers/gamepad.h>
+ 
+ noreturn void panic(bool allow_menu, const char *fmt, ...) {
+     va_list args;
+@@ -77,6 +78,7 @@ noreturn void panic(bool allow_menu, const char *fmt, ...) {
+       allow_menu == true) {
+         print("Press a key to return to %s.", booting_from_editor ? "editor" : "menu");
+ 
++        gamepad_init();
+         getchar();
+ 
+         // This fixes a crash
+diff --git a/common/menu.c b/common/menu.c
+index b19acd2..ce833c2 100644
+--- a/common/menu.c
++++ b/common/menu.c
+@@ -21,6 +21,7 @@
+ #include <drivers/vga_textmode.h>
+ #include <drivers/serial.h>
+ #include <drivers/mouse.h>
++#include <drivers/gamepad.h>
+ #include <protos/linux.h>
+ #include <protos/chainload.h>
+ #include <protos/multiboot1.h>
+@@ -426,6 +427,7 @@ static size_t editor_cell_to_offset(size_t *cell_map, size_t x, size_t y) {
+ }
+ 
+ char *config_entry_editor(const char *title, const char *orig_entry) {
++    gamepad_deinit();
+     FOR_TERM(TERM->autoflush = false);
+ 
+     FOR_TERM(TERM->cursor_enabled = true);
+@@ -1497,6 +1499,7 @@ noreturn static void boot_uefi_shell(void) {
+     char *p = shell_entry;
+ 
+     mouse_deinit();
++    gamepad_deinit();
+ 
+     p = append_string(p, "PROTOCOL: efi\nPATH: ");
+     p = append_string(p, uefi_shell_volume->is_optical ? "odd" : "hdd");
+@@ -1528,6 +1531,7 @@ bool reboot_to_fw_ui_supported(void) {
+ 
+ noreturn void reboot_to_fw_ui(void) {
+     mouse_deinit();
++    gamepad_deinit();
+     reset_term();
+     print("Rebooting to the firmware setup...\n");
+ 
+@@ -1593,6 +1597,7 @@ static void print_entry_comment(const struct menu_entry *entry, size_t row) {
+ }
+ 
+ noreturn void _menu(bool first_run) {
++    gamepad_deinit();
+     size_t data_size = (uintptr_t)data_end - (uintptr_t)data_begin;
+ #if defined (BIOS)
+     size_t s2_data_size = (uintptr_t)s2_data_end - (uintptr_t)s2_data_begin;
+@@ -2008,6 +2013,8 @@ noreturn void _menu(bool first_run) {
+ 
+     menu_init_term();
+ 
++    gamepad_init();
++
+     if (!quiet) {
+         mouse_init();
+     }
+@@ -2297,6 +2304,37 @@ timeout_aborted:
+                 mouse_render_pointer();
+                 break;
+             }
++            case GETCHAR_GAMEPAD_EXPAND: {
++                if (selected_menu_entry != NULL && selected_menu_entry->sub != NULL) {
++                    selected_menu_entry->expanded = true;
++                    goto refresh;
++                }
++                break;
++            }
++            case GETCHAR_GAMEPAD_BACK: {
++                struct menu_entry *target = selected_menu_entry;
++                if (target == NULL) {
++                    break;
++                }
++                if (target->sub == NULL || !target->expanded) {
++                    target = target->parent;
++                }
++                if (target == NULL) {
++                    break;
++                }
++                // Select the directory's visible row before collapsing it.
++                while (selected_entry != 0) {
++                    struct menu_entry *candidate = NULL;
++                    print_tree(0, 0, NULL, 0, 0, selected_entry, menu_tree,
++                               &candidate, NULL, NULL);
++                    if (candidate == target) {
++                        break;
++                    }
++                    selected_entry--;
++                }
++                target->expanded = false;
++                goto refresh;
++            }
+             case GETCHAR_CURSOR_RIGHT:
+             case '\n':
+             case ' ':
+@@ -2353,6 +2391,7 @@ timeout_aborted:
+                     char *new_body = config_entry_editor(selected_menu_entry->name, selected_menu_entry->body);
+                     // Drop half-delivered mouse input left over from the editor.
+                     mouse_flush();
++                    gamepad_init();
+                     if (new_body == NULL)
+                         goto refresh;
+                     selected_menu_entry->body = new_body;
+@@ -2389,6 +2428,7 @@ timeout_aborted:
+                     }
+                     booting_from_blank = false;
+                     mouse_flush();
++                    gamepad_init();
+                     goto refresh;
+                 }
+                 break;
+@@ -2400,6 +2440,7 @@ timeout_aborted:
+ noreturn void boot(char *config) {
+     // Kill the mouse so no packets pile up.
+     mouse_deinit();
++    gamepad_deinit();
+ 
+ #if defined (__riscv)
+     init_riscv(config);
+diff --git a/common/mm/pmm.s2.c b/common/mm/pmm.s2.c
+index 524771a..84df396 100644
+--- a/common/mm/pmm.s2.c
++++ b/common/mm/pmm.s2.c
+@@ -7,6 +7,7 @@
+ #include <lib/misc.h>
+ #include <lib/libc.h>
+ #include <lib/print.h>
++#include <drivers/gamepad.h>
+ #if defined (UEFI)
+ #  include <efi.h>
+ #endif
+@@ -633,6 +634,7 @@ static void pmm_reclaim_uefi_mem(struct memmap_entry *m, size_t *_count, bool ra
+ }
+ 
+ void pmm_release_uefi_mem(void) {
++    gamepad_deinit();
+     EFI_STATUS status;
+ 
+     for (size_t i = 0; i < untouched_memmap_entries; i++) {

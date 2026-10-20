@@ -1,0 +1,25 @@
+Read-only Gamescope app frametime sampler. No compositor settings are changed.
+
+Build on Linux with wayland-client development files and wayland-scanner installed:
+
+wayland-scanner client-header gamescope-control.xml gamescope-control-client-protocol.h
+wayland-scanner private-code gamescope-control.xml gamescope-control-protocol.c
+cc -std=c11 -O2 -Wall -Wextra -Werror gamescope-perf-query.c gamescope-control-protocol.c $(pkg-config --cflags --libs wayland-client) -o gamescope-perf-query
+
+Run in the Gaming Mode user session, with its XDG_RUNTIME_DIR and GAMESCOPE_WAYLAND_DISPLAY, passing the actual Steam app ID:
+
+./gamescope-perf-query APP_ID 12 > sample.csv
+
+The client ends after the first reply at or beyond the requested duration, leaving no stats request outstanding. If the specified app is not presenting frames, the server supplies no response; select a currently rendering app. Output contains elapsed monotonic seconds, app ID, frametime_ns, and derived FPS.
+
+Source: Gamescope 3.16.25 public gamescope_control v6 request_app_performance_stats/app_performance_stats. With the default mangoapp_use_output_timing=true, this counter advances on base-plane commit changes and uses completed DRM flip timestamps. It runs regardless of the Mangoapp overlay process. With that convar false, it uses consecutive game commit present_time instead. The helper does not change the convar.
+
+Measurement limits: requests are one-shot, not a continuous presentation subscription.
+The next request is sent only after a reply is handled, so updates may be missed.
+Reply count per second is observed response throughput, not automatically game FPS.
+Median reciprocal interval is event-weighted, not sustained FPS. Compare the sum
+of intervals after the first reply with the client elapsed span to assess whether
+sampling was consecutive. The source associates global base-plane/app metadata
+with completed flip timestamps; this is not an independent per-game hardware
+presentation counter. Mango CSV periodically samples that latest counter, so
+its median can differ from the event-weighted query median.

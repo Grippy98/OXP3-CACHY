@@ -1,0 +1,88 @@
+From f26a8df8dff9d6e675649b76e03553f43395ed9d Mon Sep 17 00:00:00 2001
+From: Mitul Golani <mitulkumar.ajitkumar.golani@intel.com>
+Date: Wed, 17 Jun 2026 10:28:50 +0530
+Subject: [PATCH] drm/i915/display: Program TRANS_VTOTAL from mode vtotal
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There are monitors being sensitive to MSA and end up
+blanking out when we override Vtotal, DP transcoder
+uses TRANS_VTOTAL to derive MSA VTotal. Avoid overriding
+crtc_vtotal to 1 on platform which supports VRR Timing
+generator and always program VTOTAL from mode timing in
+transcoder timing paths.
+
+--v2:
+- Remove write to crtc_state->hw.adjusted_mode.crtc_vtotal
+during intel_vrr_get_config. (Ankit)
+- Fix merge conflicts.
+
+Bspec: 70001
+Cc: Ankit Nautiyal <ankit.k.nautiyal@intel.com>
+Cc: Ville Syrjälä <ville.syrjala@linux.intel.com>
+Cc: Suraj Kandpal <suraj.kandpal@intel.com>
+Signed-off-by: Mitul Golani <mitulkumar.ajitkumar.golani@intel.com>
+Reviewed-by: Suraj Kandpal <suraj.kandpal@intel.com>
+Signed-off-by: Suraj Kandpal <suraj.kandpal@intel.com>
+Link: https://patch.msgid.link/20260617045850.862100-1-mitulkumar.ajitkumar.golani@intel.com
+
+Backport note: context refreshed for the locally patched CachyOS 7.2.9
+source (cpu_transcoder names and existing PCON VRR additions). The same
+three blocks are removed as upstream commit f26a8df8dff9.
+
+---
+diff --git a/drivers/gpu/drm/i915/display/intel_display.c b/drivers/gpu/drm/i915/display/intel_display.c
+--- a/drivers/gpu/drm/i915/display/intel_display.c
++++ b/drivers/gpu/drm/i915/display/intel_display.c
+@@ -2731,15 +2731,6 @@
+ 		       HSYNC_START(adjusted_mode->crtc_hsync_start - 1) |
+ 		       HSYNC_END(adjusted_mode->crtc_hsync_end - 1));
+ 
+-	/*
+-	 * For platforms that always use VRR Timing Generator, the VTOTAL.Vtotal
+-	 * bits are not required. Since the support for these bits is going to
+-	 * be deprecated in upcoming platforms, avoid writing these bits for the
+-	 * platforms that do not use legacy Timing Generator.
+-	 */
+-	if (intel_vrr_always_use_vrr_tg(display))
+-		crtc_vtotal = 1;
+-
+ 	intel_de_write(display, TRANS_VTOTAL(display, cpu_transcoder),
+ 		       VACTIVE(crtc_vdisplay - 1) |
+ 		       VTOTAL(crtc_vtotal - 1));
+@@ -2816,14 +2807,6 @@
+ 	intel_de_write(display, TRANS_VBLANK(display, cpu_transcoder),
+ 		       VBLANK_START(crtc_vblank_start - 1) |
+ 		       VBLANK_END(crtc_vblank_end - 1));
+-	/*
+-	 * For platforms that always use VRR Timing Generator, the VTOTAL.Vtotal
+-	 * bits are not required. Since the support for these bits is going to
+-	 * be deprecated in upcoming platforms, avoid writing these bits for the
+-	 * platforms that do not use legacy Timing Generator.
+-	 */
+-	if (intel_vrr_always_use_vrr_tg(display))
+-		crtc_vtotal = 1;
+ 
+ 	/*
+ 	 * The double buffer latch point for TRANS_VTOTAL
+diff --git a/drivers/gpu/drm/i915/display/intel_vrr.c b/drivers/gpu/drm/i915/display/intel_vrr.c
+--- a/drivers/gpu/drm/i915/display/intel_vrr.c
++++ b/drivers/gpu/drm/i915/display/intel_vrr.c
+@@ -1123,16 +1123,6 @@
+ 			crtc_state->vrr.vmin += intel_vrr_vmin_flipline_offset(display);
+ 		}
+ 
+-		/*
+-		 * For platforms that always use VRR Timing Generator, the VTOTAL.Vtotal
+-		 * bits are not filled. Since for these platforms TRAN_VMIN is always
+-		 * filled with crtc_vtotal, use TRAN_VRR_VMIN to get the vtotal for
+-		 * adjusted_mode.
+-		 */
+-		if (intel_vrr_always_use_vrr_tg(display))
+-			crtc_state->hw.adjusted_mode.crtc_vtotal =
+-				intel_vrr_vmin_vtotal(crtc_state);
+-
+ 		if (HAS_AS_SDP(display)) {
+ 			trans_vrr_vsync =
+ 				intel_de_read(display,

@@ -1,0 +1,82 @@
+From 395838c813b5109320db274c31461f34cacc6fb3 Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Thu, 3 Sep 2026 11:30:08 -0500
+Subject: [PATCH] HID: hid-oxp: serialize complete RGB updates
+
+The transport mutex protects one report at a time, but changing an RGB
+effect requires a status command followed by a color or effect command.
+Serialize whole RGB transactions so sysfs and delayed brightness work do
+not interleave these command sequences.
+
+Fixes: 84910c459d65 ("HID: hid-oxp: Add OneXPlayer configuration driver")
+Assisted-by: LLM
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index bee13174e294b6..8d078161321663 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -181,6 +181,7 @@ static struct oxp_hid_cfg {
+ 	struct led_classdev_mc *led_mc;
+ 	struct hid_device *hdev;
+ 	struct mutex cfg_mutex; /*ensure single synchronous output report*/
++	struct mutex rgb_mutex; /*serialize complete RGB transactions*/
+ 	u8 rgb_brightness;
+ 	u8 gamepad_mode;
+ 	u8 rumble_intensity;
+@@ -1074,6 +1075,8 @@ static ssize_t oxp_rgb_status_show(void)
+ 	u16 up = get_usage_page(drvdata.hdev);
+ 	u8 *data;
+ 
++	guard(mutex)(&drvdata.rgb_mutex);
++
+ 	switch (up) {
+ 	case GEN1_USAGE_PAGE:
+ 		data = (u8[1]) { OXP_GET_PROPERTY };
+@@ -1191,6 +1194,8 @@ static ssize_t enabled_store(struct device *dev, struct device_attribute *attr,
+ 		return ret;
+ 	val = ret;
+ 
++	guard(mutex)(&drvdata.rgb_mutex);
++
+ 	ret = oxp_rgb_status_store(val, drvdata.rgb_speed,
+ 				   drvdata.rgb_brightness);
+ 	if (ret)
+@@ -1244,6 +1249,8 @@ static ssize_t effect_store(struct device *dev, struct device_attribute *attr,
+ 
+ 	val = ret;
+ 
++	guard(mutex)(&drvdata.rgb_mutex);
++
+ 	ret = oxp_rgb_status_store(drvdata.rgb_en, drvdata.rgb_speed,
+ 				   drvdata.rgb_brightness);
+ 	if (ret)
+@@ -1302,6 +1309,8 @@ static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
+ 	if (val > 9)
+ 		return -EINVAL;
+ 
++	guard(mutex)(&drvdata.rgb_mutex);
++
+ 	ret = oxp_rgb_status_store(drvdata.rgb_en, val, drvdata.rgb_brightness);
+ 	if (ret)
+ 		return ret;
+@@ -1340,6 +1349,8 @@ static void oxp_rgb_queue_fn(struct work_struct *work)
+ 	u8 val = 4 * brightness / max_brightness;
+ 	int ret;
+ 
++	guard(mutex)(&drvdata.rgb_mutex);
++
+ 	if (drvdata.rgb_brightness != val) {
+ 		ret = oxp_rgb_status_store(drvdata.rgb_en, drvdata.rgb_speed, val);
+ 		if (ret)
+@@ -1470,6 +1481,7 @@ static int oxp_cfg_probe(struct hid_device *hdev, u16 up)
+ 
+ 	hid_set_drvdata(hdev, &drvdata);
+ 	mutex_init(&drvdata.cfg_mutex);
++	mutex_init(&drvdata.rgb_mutex);
+ 	drvdata.hdev = hdev;
+ 
+ 	if (up == GEN2_USAGE_PAGE && oxp_hybrid_mcu_device())

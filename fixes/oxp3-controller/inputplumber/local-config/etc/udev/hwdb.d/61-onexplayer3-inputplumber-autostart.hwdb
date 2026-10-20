@@ -1,0 +1,3 @@
+# ONEXPLAYER 3: local equivalent of InputPlumber PR #660 autostart.
+dmi:*svnONE-NETBOOK:pnONEXPLAYER3:*
+  USE_INPUTPLUMBER=1

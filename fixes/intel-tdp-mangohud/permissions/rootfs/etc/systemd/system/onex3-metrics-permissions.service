@@ -1,0 +1,17 @@
+[Unit]
+Description=Read-only OXP3 Intel telemetry access for MangoHud
+After=systemd-udev-trigger.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/onex3-metrics/onex3_metrics_permissions.py apply
+ExecStop=/usr/bin/python3 /usr/local/lib/onex3-metrics/onex3_metrics_permissions.py restore
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Normal-user session wrapper. Read three whitespace-delimited values from the
+# operator-created root-owned manifest: stock SHA256, candidate SHA256, candidate.
+set -euo pipefail
+stock=/usr/bin/gamescope
+manifest=/etc/oxp3-cachy/gamescope-runtime
+if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+    read -r expected_stock expected_candidate candidate < "$manifest" || true
+    if [[ ${expected_stock:-} =~ ^[0-9a-f]{64}$ && ${expected_candidate:-} =~ ^[0-9a-f]{64}$ && ${candidate:-} == /opt/onex3/gamescope/bin/gamescope && -x "$candidate" && $(sha256sum "$stock" | cut -d ' ' -f1) == "$expected_stock" && $(sha256sum "$candidate" | cut -d ' ' -f1) == "$expected_candidate" ]]; then
+        exec "$candidate" "$@"
+    fi
+fi
+printf 'OXP3 Gamescope runtime missing or distribution/candidate changed; using distribution Gamescope.\n' >&2
+exec "$stock" "$@"

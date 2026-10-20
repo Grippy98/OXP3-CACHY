@@ -1,0 +1,19 @@
+--- a/drivers/gpu/drm/drm_edid.c
++++ b/drivers/gpu/drm/drm_edid.c
+@@ -2204,6 +2204,16 @@
+ 		 */
+ 		ret = i2c_transfer(adapter, &msgs[3 - xfers], xfers);
+ 
++		/*
++		 * A base block with no matching header bytes may have come
++		 * from a stale non-zero segment pointer. Retry with an
++		 * explicit segment zero, while preserving the two-message
++		 * path for normal reads and potentially repairable headers.
++		 */
++		if (block == 0 && len >= EDID_LENGTH && xfers == 2 &&
++		    ret == xfers && drm_edid_header_is_valid(buf) == 0)
++			xfers = 3;
++
+ 		if (ret == -ENXIO) {
+ 			DRM_DEBUG_KMS("drm: skipping non-existent adapter %s\n",
+ 					adapter->name);

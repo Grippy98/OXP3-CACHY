@@ -1,0 +1,32 @@
+From f61f96a50cc4573879644da77272aaa8bef59718 Mon Sep 17 00:00:00 2001
+From: Andrei Aldea <andrei1998@gmail.com>
+Date: Sun, 30 Aug 2026 10:05:23 -0500
+Subject: [PATCH] HID: hid-oxp: fix default M1 and M2 key mappings
+
+The default button map intends to assign F15 and F16 to M1 and M2, but
+the selected mapping table indexes resolve to F16 and F17. Use indexes
+47 and 48 so the programmed usages match the existing comments.
+
+Assisted-by: LLM
+Fixes: e4c850a6e750 ("HID: hid-oxp: Add Button Mapping Interface")
+Signed-off-by: Andrei Aldea <andrei1998@gmail.com>
+---
+ drivers/hid/hid-oxp.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/hid/hid-oxp.c b/drivers/hid/hid-oxp.c
+index d2ded6b08ce9e2..3f2be8059ddb1a 100644
+--- a/drivers/hid/hid-oxp.c
++++ b/drivers/hid/hid-oxp.c
+@@ -607,9 +607,9 @@ static void oxp_set_defaults_bmap_2(struct oxp_bmap_page_2 *bmap)
+ 	bmap->btn_dright.button_idx = BUTTON_DRIGHT;
+ 	bmap->btn_dright.mapping_idx = 15;
+ 	bmap->btn_m1.button_idx = BUTTON_M1;
+-	bmap->btn_m1.mapping_idx = 48; /* KEY_F15 */
++	bmap->btn_m1.mapping_idx = 47; /* KEY_F15 */
+ 	bmap->btn_m2.button_idx = BUTTON_M2;
+-	bmap->btn_m2.mapping_idx = 49; /* KEY_F16 */
++	bmap->btn_m2.mapping_idx = 48; /* KEY_F16 */
+ }
+ 
+ static void oxp_page_fill_data(char *buf, const struct oxp_button_idx *buttons,

@@ -1,0 +1,234 @@
+--- a/drivers/gpu/drm/i915/display/intel_display_params.c
++++ b/drivers/gpu/drm/i915/display/intel_display_params.c
+@@ -124,6 +124,10 @@
+ 	"Enable VRR DC balance (0=disabled, 1=enabled). "
+ 	"Default: 0 (disabled)");
+ 
++intel_display_param_named_unsafe(enable_pcon_vrr, int, 0400,
++	"Experimental SST HDMI PCON VRR (0=disabled, 1=require advertised timing-ignore, "
++	"2=also allow Synaptics cHDMIb without timing-ignore). Default: 0");
++
+ intel_display_param_named_unsafe(enable_panel_replay, int, 0400,
+ 	"Enable Panel Replay (0=disabled, 1=enabled). Default: -1 (use per-chip default)");
+ 
+--- a/drivers/gpu/drm/i915/display/intel_display_params.h
++++ b/drivers/gpu/drm/i915/display/intel_display_params.h
+@@ -47,6 +47,7 @@
+ 	param(int, enable_fbc, -1, 0600) \
+ 	param(int, enable_psr, -1, 0600) \
+ 	param(bool, enable_dc_balance, false, 0600) \
++	param(int, enable_pcon_vrr, 0, 0600) \
+ 	param(int, enable_panel_replay, -1, 0600) \
+ 	param(bool, psr_safest_params, false, 0400) \
+ 	param(bool, enable_psr2_sel_fetch, true, 0400) \
+--- a/drivers/gpu/drm/i915/display/intel_dp.c
++++ b/drivers/gpu/drm/i915/display/intel_dp.c
+@@ -1769,6 +1769,44 @@
+ 	return connector->base.display_info.is_hdmi;
+ }
+ 
++bool intel_dp_pcon_vrr_capable(struct intel_dp *intel_dp)
++{
++	struct intel_display *display = to_intel_display(intel_dp);
++	struct intel_connector *connector = intel_dp->attached_connector;
++	const struct drm_display_info *info = &connector->base.display_info;
++	const struct drm_hdmi_vrr_cap *vrr = &info->hdmi.vrr_cap;
++	const struct drm_dp_dpcd_ident *ident = &intel_dp->desc.ident;
++	static const u8 synaptics_oui[] = { 0x90, 0xcc, 0x24 };
++	int experiment = display->params.enable_pcon_vrr;
++	bool known_converter;
++
++	if (experiment < 1 || experiment > 2 || intel_dp_is_edp(intel_dp) ||
++	    intel_dp->is_mst || connector->mst.dp ||
++	    !drm_dp_is_branch(intel_dp->dpcd) || !intel_dp->as_sdp_supported ||
++	    !info->is_hdmi || !info->hdmi.max_frl_rate_per_lane ||
++	    !vrr->supported || !vrr->vrr_min || vrr->vrr_min > 48 ||
++	    (vrr->vrr_max && vrr->vrr_max < 100))
++		return false;
++
++	/*
++	 * The observed UGREEN converter exposes AS SDP support and a 48 Gbit/s
++	 * FRL field, but misidentifies its downstream port as DP and omits the
++	 * Ignore MSA capability. Treat this only as an explicit experiment.
++	 * Do not extend this override to other branches or enable it by default.
++	 */
++	known_converter = experiment == 2 &&
++		!memcmp(ident->oui, synaptics_oui, sizeof(synaptics_oui)) &&
++		!memcmp(ident->device_id, "cHDMIb", sizeof(ident->device_id)) &&
++		(intel_dp->downstream_ports[2] & DP_PCON_MAX_FRL_BW) == DP_PCON_MAX_48GBPS;
++
++	if (!drm_dp_get_pcon_max_frl_bw(intel_dp->dpcd, intel_dp->downstream_ports) &&
++	    !known_converter)
++		return false;
++
++	return drm_dp_sink_can_do_video_without_timing_msa(intel_dp->dpcd) ||
++		known_converter;
++}
++
+ static bool intel_dp_source_supports_fec(struct intel_dp *intel_dp,
+ 					 const struct intel_crtc_state *pipe_config)
+ {
+@@ -3210,6 +3248,10 @@
+ static bool intel_dp_needs_as_sdp(struct intel_dp *intel_dp,
+ 				  struct intel_crtc_state *crtc_state)
+ {
++	/* A v1 packet's presence, rather than its payload, signals VRR. */
++	if (intel_dp_pcon_vrr_capable(intel_dp))
++		return crtc_state->vrr.enable;
++
+ 	if (!intel_dp->as_sdp_v2_supported)
+ 		return false;
+ 
+@@ -3242,6 +3284,15 @@
+ 		return;
+ 
+ 	crtc_state->infoframes.enable |= intel_hdmi_infoframe_enable(DP_SDP_ADAPTIVE_SYNC);
++
++	if (intel_dp_pcon_vrr_capable(intel_dp)) {
++		/* PCONs consume AS SDP v1: header 00 22 01 00, zero payload. */
++		memset(as_sdp, 0, sizeof(*as_sdp));
++		as_sdp->sdp_type = DP_SDP_ADAPTIVE_SYNC;
++		as_sdp->revision = 1;
++		as_sdp->length = 0;
++		return;
++	}
+ 
+ 	as_sdp->sdp_type = DP_SDP_ADAPTIVE_SYNC;
+ 	as_sdp->length = 0x9;
+@@ -5301,6 +5352,12 @@
+ 	sdp->sdp_header.HB2 = as_sdp->revision;
+ 	sdp->sdp_header.HB3 = as_sdp->length;
+ 
++	if (as_sdp->revision == 1) {
++		if (as_sdp->length)
++			return -EINVAL;
++		return length;
++	}
++
+ 	/* Fill AS (Adaptive Sync) SDP Payload */
+ 	sdp->db[0] = as_sdp->mode;
+ 	sdp->db[1] = as_sdp->vtotal & 0xFF;
+@@ -5488,7 +5545,16 @@
+ 	if (sdp->sdp_header.HB1 != DP_SDP_ADAPTIVE_SYNC)
+ 		return -EINVAL;
+ 
+-	if ((sdp->sdp_header.HB3 & 0x3F) != 9)
++	if (sdp->sdp_header.HB2 == 1) {
++		if (sdp->sdp_header.HB3 != 0)
++			return -EINVAL;
++		as_sdp->sdp_type = sdp->sdp_header.HB1;
++		as_sdp->revision = 1;
++		return 0;
++	}
++
++	if (sdp->sdp_header.HB2 != 2 ||
++	    (sdp->sdp_header.HB3 & DP_AS_SDP_LENGTH_MASK) != 9)
+ 		return -EINVAL;
+ 
+ 	as_sdp->sdp_type = sdp->sdp_header.HB1;
+@@ -6460,6 +6526,13 @@
+ 	drm_edid_connector_update(&connector->base, drm_edid);
+ 
+ 	vrr_capable = intel_vrr_is_capable(connector);
++	if (intel_dp_pcon_vrr_capable(intel_dp))
++		drm_info(display->drm,
++			 "[CONNECTOR:%d:%s] experimental PCON VRR enabled, AS SDP v1, HDMI range %u-%u Hz, timing-ignore advertised: %s\n",
++			 connector->base.base.id, connector->base.name,
++			 connector->base.display_info.hdmi.vrr_cap.vrr_min,
++			 connector->base.display_info.hdmi.vrr_cap.vrr_max,
++			 str_yes_no(drm_dp_sink_can_do_video_without_timing_msa(intel_dp->dpcd)));
+ 	drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s] VRR capable: %s\n",
+ 		    connector->base.base.id, connector->base.name, str_yes_no(vrr_capable));
+ 	drm_connector_set_vrr_capable_property(&connector->base, vrr_capable);
+--- a/drivers/gpu/drm/i915/display/intel_dp.h
++++ b/drivers/gpu/drm/i915/display/intel_dp.h
+@@ -88,6 +88,7 @@
+ 				   struct intel_crtc_state *pipe_config,
+ 				   struct drm_connector_state *conn_state);
+ bool intel_dp_has_hdmi_sink(struct intel_dp *intel_dp);
++bool intel_dp_pcon_vrr_capable(struct intel_dp *intel_dp);
+ bool intel_dp_is_edp(struct intel_dp *intel_dp);
+ bool intel_dp_is_uhbr(const struct intel_crtc_state *crtc_state);
+ bool intel_dp_has_dsc(const struct intel_connector *connector);
+--- a/drivers/gpu/drm/i915/display/intel_vrr.c
++++ b/drivers/gpu/drm/i915/display/intel_vrr.c
+@@ -31,10 +31,27 @@
+ #define DCB_CORRECTION_AGGRESSIVENESS	1000 /* ms × 100; 10 ms */
+ #define DCB_BLANK_TARGET		50
+ 
++static struct drm_monitor_range_info
++intel_vrr_get_range(struct intel_connector *connector)
++{
++	const struct drm_display_info *info = &connector->base.display_info;
++	struct drm_monitor_range_info range = info->monitor_range;
++
++	if (connector->base.connector_type == DRM_MODE_CONNECTOR_DisplayPort &&
++	    intel_dp_pcon_vrr_capable(intel_attached_dp(connector))) {
++		/* HDMI VRR limits can be narrower than the base monitor range. */
++		range.min_vfreq = info->hdmi.vrr_cap.vrr_min;
++		/* Zero denotes a maximum determined by the selected video mode. */
++		range.max_vfreq = info->hdmi.vrr_cap.vrr_max;
++	}
++
++	return range;
++}
++
+ bool intel_vrr_is_capable(struct intel_connector *connector)
+ {
+ 	struct intel_display *display = to_intel_display(connector);
+-	const struct drm_display_info *info = &connector->base.display_info;
++	struct drm_monitor_range_info range;
+ 	struct intel_dp *intel_dp;
+ 
+ 	if (!HAS_VRR(display))
+@@ -55,6 +72,8 @@
+ 		if (connector->mst.dp)
+ 			return false;
+ 		intel_dp = intel_attached_dp(connector);
++		if (intel_dp_pcon_vrr_capable(intel_dp))
++			return true;
+ 		/*
+ 		 * Among non-MST DP branch devices, only an HDMI 2.1 sink connected
+ 		 * via a PCON could support VRR. However, supporting VRR through a
+@@ -74,20 +93,21 @@
+ 		return false;
+ 	}
+ 
+-	if (!info->monitor_range.min_vfreq || !info->monitor_range.max_vfreq ||
+-	    info->monitor_range.min_vfreq > info->monitor_range.max_vfreq)
++	range = intel_vrr_get_range(connector);
++	if (!range.min_vfreq || !range.max_vfreq ||
++	    range.min_vfreq > range.max_vfreq)
+ 		return false;
+ 
+-	return info->monitor_range.max_vfreq - info->monitor_range.min_vfreq > 10;
++	return range.max_vfreq - range.min_vfreq > 10;
+ }
+ 
+ bool intel_vrr_is_in_range(struct intel_connector *connector, int vrefresh)
+ {
+-	const struct drm_display_info *info = &connector->base.display_info;
++	struct drm_monitor_range_info range = intel_vrr_get_range(connector);
+ 
+ 	return intel_vrr_is_capable(connector) &&
+-		vrefresh >= info->monitor_range.min_vfreq &&
+-		vrefresh <= info->monitor_range.max_vfreq;
++		vrefresh >= range.min_vfreq &&
++		(!range.max_vfreq || vrefresh <= range.max_vfreq);
+ }
+ 
+ bool intel_vrr_possible(const struct intel_crtc_state *crtc_state)
+@@ -355,11 +375,11 @@
+ int intel_vrr_compute_vmax(struct intel_connector *connector,
+ 			   const struct drm_display_mode *adjusted_mode)
+ {
+-	const struct drm_display_info *info = &connector->base.display_info;
++	struct drm_monitor_range_info range = intel_vrr_get_range(connector);
+ 	int vmax;
+ 
+ 	vmax = adjusted_mode->crtc_clock * 1000 /
+-		(adjusted_mode->crtc_htotal * info->monitor_range.min_vfreq);
++		(adjusted_mode->crtc_htotal * range.min_vfreq);
+ 	vmax = max_t(int, vmax, adjusted_mode->crtc_vtotal);
+ 
+ 	return vmax;
