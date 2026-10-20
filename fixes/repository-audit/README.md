@@ -4,4 +4,6 @@ This folder reviews [onexplayer3-steamos-setup](https://github.com/HHHHanasak1/o
 
 Read [WRITEUP.md](WRITEUP.md) for applicability and [the implementation review](third-party.md) for 18 source-level findings. The foreign installer, firmware, ACPI image and downloaded binaries are not bundled or executed.
 
+The [2026-10-20 game-pack follow-up](kas5852-game-pack.md) reviews kas5852's pinned branch and linked Intel Decky plugin against the current CachyOS setup. It separates useful per-game experiments from graphics correctness, rollback, power-control and firmware concerns.
+
 This collection implements only independently scoped fixes. No action is installed by this folder or its menu entry.
