@@ -1,0 +1,39 @@
+{
+  "community": {
+    "url": "https://github.com/HHHHanasak1/xess-xmx-linux",
+    "commit": "627566641c360c7a0e5d529898b2a81daef1c7ab",
+    "release": "20261018"
+  },
+  "mesa": {
+    "version": "26.3.0-rc1",
+    "url": "https://archive.mesa3d.org/mesa-26.3.0-rc1.tar.xz",
+    "sha256": "63327d58a51d189c1d1600746c505609bba5c495123b4e51de4e0c038b745542",
+    "patches": [
+      "patches/mesa-26.3/0001-anv-cm-kernel-injection.patch",
+      "patches/mesa-26.3/0002-anv-cm-debug-tools.patch",
+      "patches/mesa-26.3/0003-anv-cm-xe2-large-grf.patch",
+      "patches/mesa-26.3/0004-anv-jay-divergent-barriers.patch"
+    ]
+  },
+  "shim_toolchain": {
+    "project": "https://github.com/mstorsjo/llvm-mingw",
+    "release": "20261006",
+    "macos_archive": "llvm-mingw-20261006-ucrt-macos-universal.tar.xz",
+    "sha256": "a7a19b11048e89372637d26279cdb7c430ed3cf8c1e224310421312bf986ebf6",
+    "runtime": "static C++ runtime with Windows UCRT imports"
+  },
+  "compiler": {
+    "igc": "v2.10.10",
+    "ocloc": "25.18.33578.6",
+    "hashes": "Exact asset URLs and SHA256 values are pinned in fetch-compiler.py."
+  },
+  "tested_proton": {
+    "game": "hotfix-20261007-x86_64",
+    "separate_shim_load_test": "experimental-11.0-20261014-x86_64"
+  },
+  "game_xess": {
+    "super_resolution": "2.0.2.68",
+    "frame_generation": "1.3.1.78",
+    "low_latency": "1.3.2.10"
+  }
+}

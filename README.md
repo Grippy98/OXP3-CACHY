@@ -36,6 +36,7 @@ See [installation and rollback](docs/INSTALLATION.md) for prerequisites, argumen
 | [LG TV EDID recovery](fixes/lg-c5-edid/README.md) | Saved-EDID workaround and kernel recovery patch | Hardware tested workaround/patch; explicit capture required |
 | [Built-in panel refresh](fixes/internal-panel-refresh/README.md) | Lua profile, accepted zero-lead runtime and kernel patches | Full setup hardware tested; menu installs the profile only |
 | [Moonlight client](fixes/moonlight-client/README.md) | Pinned fork with Native resolution/FPS, Wi-Fi bitrate presets and optional Intel HDR/4:4:4 import | Manual build; docked detector/import tested; undock and HDR presentation unverified |
+| [Community XeSS XMX / XeFG](fixes/xess-xmx-community/README.md) | Private per-game Mesa/shim, verified compiler fetch, build helpers and launcher | Experimental; game loading and generated XMX code verified; gameplay/FG pending |
 | [External HDMI VRR](fixes/external-display-vrr/README.md) | Opt-in Intel PCON / FreeSync prototype and build recipes | Experimental: 1080p SDR worked at 60/80 FPS; 4K VRR unresolved |
 | [HDMI-CEC](fixes/hdmi-cec/README.md) | Read-only transport probe and limitations | No usable transport on the tested adapters |
 | [Qt login recovery](fixes/cachyos-qt-login-recovery/README.md) | Package-mismatch diagnosis and recovery guide | Historical repair; no automated downgrade |
