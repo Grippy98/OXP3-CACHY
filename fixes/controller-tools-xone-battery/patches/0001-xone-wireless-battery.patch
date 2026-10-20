@@ -1,0 +1,1256 @@
+diff --git a/backend/src/api.rs b/backend/src/api.rs
+index 6001456..3b0278b 100644
+--- a/backend/src/api.rs
++++ b/backend/src/api.rs
+@@ -3,9 +3,11 @@ mod generic;
+ mod nintendo;
+ mod playstation;
+ mod xbox;
++mod xone;
+ use anyhow::Result;
+ use hidapi::HidApi;
+ use log::debug;
++use std::path::PathBuf;
+ use udev::Enumerator;
+ 
+ use crate::controller::{Controller, Status};
+@@ -18,7 +20,13 @@ pub async fn controllers_async() -> Result<Vec<Controller>> {
+ 
+ pub fn controllers() -> Result<Vec<Controller>> {
+     let hidapi = HidApi::new()?;
+-    let mut controllers: Vec<Controller> = Vec::new();
++    let mut controllers = xone::controllers();
++    // A wired xone controller also has a USB parent. Keep its real GIP battery
++    // record rather than adding the telemetry-free USB fallback a second time.
++    let xone_clients: Vec<PathBuf> = controllers
++        .iter()
++        .filter_map(|controller| controller.device_path.as_deref().map(PathBuf::from))
++        .collect();
+ 
+     // If in debug mode, check if there is a fake controller in /tmp/fake_controller.json
+     if cfg!(debug_assertions) {
+@@ -75,9 +83,12 @@ pub fn controllers() -> Result<Vec<Controller>> {
+                     || device_info.product_id() == xbox::XBOX_ONE_S_LATEST_FW_PRODUCT_ID
+                     || device_info.product_id() == xbox::XBOX_WIRELESS_CONTROLLER_USB_PRODUCT_ID
+                     || device_info.product_id() == xbox::XBOX_WIRELESS_CONTROLLER_BT_PRODUCT_ID
+-                    || device_info.product_id() == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_USB_PRODUCT_ID
+-                    || device_info.product_id() == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_BT_PRODUCT_ID
+-                    || device_info.product_id() == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_BTLE_PRODUCT_ID)
++                    || device_info.product_id()
++                        == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_USB_PRODUCT_ID
++                    || device_info.product_id()
++                        == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_BT_PRODUCT_ID
++                    || device_info.product_id()
++                        == xbox::XBOX_WIRELESS_ELITE_CONTROLLER_BTLE_PRODUCT_ID)
+         })
+         .collect();
+     xbox_controllers.dedup_by(|a, b| a.serial_number() == b.serial_number());
+@@ -184,7 +195,9 @@ pub fn controllers() -> Result<Vec<Controller>> {
+     for device in enumerator.scan_devices()? {
+         let mut controller =
+             Controller::from_udev(&device, "Unknown Controller", 0, Status::Unknown, false);
+-        if xbox::is_xbox_controller(controller.vendor_id) {
++        if xbox::is_xbox_usb_controller(controller.vendor_id, controller.product_id)
++            && !xone::has_client_under_usb_device(device.syspath(), &xone_clients)
++        {
+             xbox::update_xbox_controller(&mut controller, false);
+             controllers.push(controller);
+         }
+diff --git a/backend/src/api/nintendo.rs b/backend/src/api/nintendo.rs
+index 594d456..5bde9f2 100644
+--- a/backend/src/api/nintendo.rs
++++ b/backend/src/api/nintendo.rs
+@@ -59,13 +59,13 @@ pub fn parse_controller_data(device_info: &DeviceInfo, hidapi: &HidApi) -> Resul
+         Status::Discharging
+     };
+     match tmp {
+-        0 => controller.capacity = 5,
+-        1 => controller.capacity = 25,
+-        2 => controller.capacity = 50,
+-        3 => controller.capacity = 75,
+-        4 => controller.capacity = 100,
++        0 => controller.capacity = Some(5),
++        1 => controller.capacity = Some(25),
++        2 => controller.capacity = Some(50),
++        3 => controller.capacity = Some(75),
++        4 => controller.capacity = Some(100),
+         _ => {
+-            controller.capacity = 0;
++            controller.capacity = Some(0);
+             debug!("Unknown battery status: {}", tmp);
+         }
+     }
+diff --git a/backend/src/api/playstation.rs b/backend/src/api/playstation.rs
+index 12295ae..d837888 100644
+--- a/backend/src/api/playstation.rs
++++ b/backend/src/api/playstation.rs
+@@ -189,7 +189,7 @@ pub fn parse_dualshock_controller_data(
+         }
+     }
+     let battery_status = get_battery_status(charging_status, battery_data);
+-    controller.capacity = battery_status.capacity;
++    controller.capacity = Some(battery_status.capacity);
+     controller.status = battery_status.status;
+     Ok(controller)
+ }
+@@ -220,7 +220,7 @@ pub fn parse_dualsense_controller_data(
+     let battery_data = ds_report.status & DS_STATUS_BATTERY_CAPACITY;
+     let charging_status = (ds_report.status & DS_STATUS_CHARGING) >> DS_STATUS_CHARGING_SHIFT;
+     let battery_status = get_battery_status(charging_status, battery_data);
+-    controller.capacity = battery_status.capacity;
++    controller.capacity = Some(battery_status.capacity);
+     controller.status = battery_status.status;
+ 
+     Ok(controller)
+@@ -296,7 +296,7 @@ pub fn parse_dualshock3_controller_data(
+     }
+ 
+     let battery_status = get_ds3_battery_status(battery_data);
+-    controller.capacity = battery_status.capacity;
++    controller.capacity = Some(battery_status.capacity);
+     controller.status = battery_status.status;
+ 
+     Ok(controller)
+diff --git a/backend/src/api/xbox.rs b/backend/src/api/xbox.rs
+index 7e0ffa5..3a51a51 100644
+--- a/backend/src/api/xbox.rs
++++ b/backend/src/api/xbox.rs
+@@ -1,4 +1,4 @@
+-use crate::controller::Status;
++use crate::controller::{ConnectionType, Status};
+ 
+ use super::bluetooth::{get_battery_percentage, get_bluetooth_address};
+ use anyhow::Result;
+@@ -8,6 +8,7 @@ use log::error;
+ use super::Controller;
+ 
+ pub const MS_VENDOR_ID: u16 = 0x045e;
++pub const XBOX_WIRELESS_RECEIVER_PRODUCT_IDS: [u16; 2] = [0x02fe, 0x02e6];
+ 
+ // Xbox One S controller
+ pub const XBOX_ONE_S_CONTROLLER_USB_PRODUCT_ID: u16 = 0x02ea; // 746
+@@ -30,6 +31,10 @@ pub const XBOX_WIRELESS_ELITE_CONTROLLER_BTLE_PRODUCT_ID: u16 = 0x0b22;
+ 
+ fn get_xbox_controller_name(product_id: u16) -> &'static str {
+     match product_id {
++        0x028e => "Xbox 360",
++        0x02d1 | 0x02dd => "Xbox One",
++        0x02e3 => "Xbox Elite",
++        0x0b0a => "Xbox Adaptive Controller",
+         XBOX_ONE_S_CONTROLLER_USB_PRODUCT_ID => "Xbox One S",
+         XBOX_ONE_S_CONTROLLER_BT_PRODUCT_ID => "Xbox One S",
+         XBOX_ONE_S_LATEST_FW_PRODUCT_ID => "Xbox One S",
+@@ -42,19 +47,32 @@ fn get_xbox_controller_name(product_id: u16) -> &'static str {
+     }
+ }
+ 
+-pub fn is_xbox_controller(vendor_id: u16) -> bool {
++pub fn is_xbox_usb_controller(vendor_id: u16, product_id: u16) -> bool {
++    // Microsoft also makes receivers, keyboards and other USB devices. A
++    // receiver is not a controller, even while no GIP battery is present yet.
+     vendor_id == MS_VENDOR_ID
++        && matches!(
++            product_id,
++            0x028e
++                | 0x02d1
++                | 0x02dd
++                | 0x02e3
++                | 0x0b0a
++                | XBOX_ONE_S_CONTROLLER_USB_PRODUCT_ID
++                | XBOX_WIRELESS_CONTROLLER_USB_PRODUCT_ID
++                | XBOX_WIRELESS_ELITE_CONTROLLER_USB_PRODUCT_ID
++        )
+ }
+ 
+ pub fn update_xbox_controller(controller: &mut Controller, bluetooth: bool) {
+     controller.name = get_xbox_controller_name(controller.product_id).to_string();
+-    controller.capacity = if bluetooth { 0 } else { 100 }; // for now for USB, "fake" it and set capacity to 100 as charging
+-    controller.status = if bluetooth {
+-        Status::Unknown
++    controller.capacity = None;
++    controller.status = Status::Unknown;
++    controller.connection_type = Some(if bluetooth {
++        ConnectionType::Wireless
+     } else {
+-        // for now for USB, "fake" it and set status to charging since it's plugged in
+-        Status::Charging
+-    };
++        ConnectionType::Usb
++    });
+ }
+ 
+ pub fn parse_xbox_controller_data(
+@@ -79,3 +97,45 @@ pub fn parse_xbox_controller_data(
+     let controller = Controller::from_hidapi(device_info, name, capacity, Status::Unknown);
+     Ok(controller)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn usb_fallback_accepts_known_wired_controllers_only() {
++        for product in [
++            0x028e, 0x02d1, 0x02dd, 0x02e3, 0x02ea, 0x0b00, 0x0b12, 0x0b0a,
++        ] {
++            assert!(is_xbox_usb_controller(MS_VENDOR_ID, product));
++            assert!(!is_xbox_usb_controller(0x1234, product));
++        }
++        for product in [0x02fe, 0x02e6, 0x0719, 0x0000, 0x1234, 0x0b13] {
++            assert!(!is_xbox_usb_controller(MS_VENDOR_ID, product));
++        }
++    }
++
++    #[test]
++    fn wired_fallback_does_not_invent_battery_telemetry() {
++        let mut controller = Controller {
++            name: String::new(),
++            vendor_id: MS_VENDOR_ID,
++            product_id: 0x028e,
++            capacity: Some(0),
++            status: Status::Unknown,
++            bluetooth: false,
++            battery_level: None,
++            connection_type: None,
++            serial_number: None,
++            device_path: None,
++        };
++        update_xbox_controller(&mut controller, false);
++        assert_eq!(controller.name, "Xbox 360");
++        assert_eq!(controller.capacity, None);
++        assert_eq!(controller.status, Status::Unknown);
++        assert!(matches!(
++            controller.connection_type,
++            Some(ConnectionType::Usb)
++        ));
++    }
++}
+diff --git a/backend/src/api/xone.rs b/backend/src/api/xone.rs
+new file mode 100644
+index 0000000..498ac5f
+--- /dev/null
++++ b/backend/src/api/xone.rs
+@@ -0,0 +1,351 @@
++//! Read xone's per-client power supplies without opening a HID/GIP device.
++
++use std::{
++    collections::HashSet,
++    fs,
++    path::{Path, PathBuf},
++};
++
++use crate::controller::{BatteryLevel, ConnectionType, Controller, Status};
++use log::debug;
++
++use super::xbox::{MS_VENDOR_ID, XBOX_WIRELESS_RECEIVER_PRODUCT_IDS};
++
++const GAMEPAD_DRIVER: &str = "xone-gip-gamepad";
++
++pub fn controllers() -> Vec<Controller> {
++    controllers_in(Path::new("/sys/class/power_supply"))
++}
++
++fn controllers_in(power_supplies: &Path) -> Vec<Controller> {
++    let mut seen_clients = HashSet::new();
++    sorted_children(power_supplies)
++        .into_iter()
++        .filter_map(|supply| {
++            // Each read can race hot-unplug. A missing or incomplete client
++            // must not prevent other controllers from being reported.
++            let controller = controller_from_supply(&supply)?;
++            let identity = controller.device_path.as_ref()?;
++            if seen_clients.insert(identity.clone()) {
++                Some(controller)
++            } else {
++                None
++            }
++        })
++        .collect()
++}
++
++fn controller_from_supply(supply: &Path) -> Option<Controller> {
++    let supply = supply.canonicalize().ok()?;
++    let client = gamepad_client(&supply)?;
++    let (name, vendor_id, product_id, serial_number) = client_input(&client)?;
++    let status = match read_trimmed(&supply.join("status"))
++        .unwrap_or_default()
++        .to_ascii_lowercase()
++        .as_str()
++    {
++        "charging" => Status::Charging,
++        "discharging" => Status::Discharging,
++        _ => Status::Unknown,
++    };
++    let battery_level = match read_trimmed(&supply.join("capacity_level"))
++        .unwrap_or_default()
++        .to_ascii_lowercase()
++        .as_str()
++    {
++        "critical" | "low" => BatteryLevel::Low,
++        "normal" => BatteryLevel::Normal,
++        "high" => BatteryLevel::High,
++        "full" => BatteryLevel::Full,
++        _ => BatteryLevel::Unknown,
++    };
++    let connection_type = if client.ancestors().any(|ancestor| {
++        read_hex(&ancestor.join("idVendor")) == Some(MS_VENDOR_ID)
++            && read_hex(&ancestor.join("idProduct"))
++                .map(|product| XBOX_WIRELESS_RECEIVER_PRODUCT_IDS.contains(&product))
++                .unwrap_or(false)
++    }) {
++        ConnectionType::Wireless
++    } else {
++        ConnectionType::Usb
++    };
++
++    // Missing battery attributes mean unknown telemetry; a removed supply or
++    // unbound client means this controller no longer belongs in the snapshot.
++    if !supply.is_dir() || gamepad_client(&supply).as_deref() != Some(client.as_path()) {
++        return None;
++    }
++
++    Some(Controller {
++        name,
++        vendor_id,
++        product_id,
++        capacity: None,
++        battery_level: Some(battery_level),
++        connection_type: Some(connection_type),
++        status,
++        bluetooth: false,
++        serial_number,
++        // Separate GIP clients can have identical product IDs and no serial.
++        // Their canonical client paths remain distinct within this snapshot.
++        device_path: Some(client.to_string_lossy().into_owned()),
++    })
++}
++
++fn gamepad_client(supply: &Path) -> Option<PathBuf> {
++    let device = supply.join("device").canonicalize().ok();
++    let start = device.as_deref().unwrap_or(supply);
++    for ancestor in start.ancestors() {
++        if let Ok(driver) = ancestor.join("driver").canonicalize() {
++            // Do not walk past a differently bound device and accidentally
++            // borrow a receiver's or sibling's identity.
++            return (driver.file_name() == Some(GAMEPAD_DRIVER.as_ref())
++                && supply.starts_with(ancestor))
++            .then(|| ancestor.to_path_buf());
++        }
++    }
++    None
++}
++
++fn client_input(client: &Path) -> Option<(String, u16, u16, Option<String>)> {
++    let inputs = client.join("input").canonicalize().ok()?;
++    if !inputs.starts_with(client) {
++        return None;
++    }
++    for input in sorted_children(&inputs) {
++        let Some(input) = input.canonicalize().ok() else {
++            continue;
++        };
++        if input.parent() != Some(inputs.as_path())
++            || !input.file_name()?.to_string_lossy().starts_with("input")
++        {
++            continue;
++        }
++        let (Some(vendor), Some(product), Some(name)) = (
++            read_hex(&input.join("id/vendor")),
++            read_hex(&input.join("id/product")),
++            read_trimmed(&input.join("name")),
++        ) else {
++            continue;
++        };
++        if name.is_empty() {
++            continue;
++        }
++        let serial = read_trimmed(&input.join("uniq")).filter(|value| !value.is_empty());
++        return Some((name, vendor, product, serial));
++    }
++    None
++}
++
++fn sorted_children(path: &Path) -> Vec<PathBuf> {
++    match fs::read_dir(path) {
++        Ok(entries) => {
++            let mut children: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
++            children.sort();
++            children
++        }
++        Err(error) => {
++            debug!(
++                "Cannot read xone discovery directory {}: {error}",
++                path.display()
++            );
++            Vec::new()
++        }
++    }
++}
++
++fn read_trimmed(path: &Path) -> Option<String> {
++    fs::read_to_string(path)
++        .ok()
++        .map(|value| value.trim().to_owned())
++}
++
++fn read_hex(path: &Path) -> Option<u16> {
++    u16::from_str_radix(read_trimmed(path)?.trim_start_matches("0x"), 16).ok()
++}
++
++pub fn has_client_under_usb_device(usb_device: &Path, clients: &[PathBuf]) -> bool {
++    clients.iter().any(|client| client.starts_with(usb_device))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{
++        os::unix::fs::symlink,
++        sync::atomic::{AtomicUsize, Ordering},
++    };
++
++    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
++
++    struct Fixture {
++        root: PathBuf,
++        supplies: PathBuf,
++        usb: PathBuf,
++        driver: PathBuf,
++    }
++
++    impl Fixture {
++        fn new(receiver: Option<u16>) -> Self {
++            let root = std::env::temp_dir().join(format!(
++                "controller-tools-xone-{}-{}",
++                std::process::id(),
++                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
++            ));
++            fs::create_dir(&root).unwrap();
++            let supplies = root.join("class/power_supply");
++            let usb = root.join("devices/usb3/3-2/3-2.3");
++            let driver = root.join("bus/xone-gip/drivers/xone-gip-gamepad");
++            for directory in [&supplies, &usb, &driver] {
++                fs::create_dir_all(directory).unwrap();
++            }
++            fs::write(usb.join("idVendor"), "045e\n").unwrap();
++            fs::write(
++                usb.join("idProduct"),
++                format!("{:04x}\n", receiver.unwrap_or(0x0b12)),
++            )
++            .unwrap();
++            Self {
++                root,
++                supplies,
++                usb,
++                driver,
++            }
++        }
++
++        fn add(&self, index: usize, level: &str, status: &str) -> PathBuf {
++            let client = self.usb.join(format!("3-2.3:1.0/gip0/gip0.{index}"));
++            let input = client.join(format!("input/input{}", index + 39));
++            let supply = client.join(format!("power_supply/gip0.{index}"));
++            fs::create_dir_all(input.join("id")).unwrap();
++            fs::create_dir_all(&supply).unwrap();
++            fs::write(input.join("id/vendor"), "045e\n").unwrap();
++            fs::write(input.join("id/product"), "0b12\n").unwrap();
++            fs::write(input.join("name"), "Xbox Wireless Controller\n").unwrap();
++            fs::write(supply.join("capacity_level"), level).unwrap();
++            fs::write(supply.join("status"), status).unwrap();
++            symlink(&self.driver, client.join("driver")).unwrap();
++            symlink(&client, supply.join("device")).unwrap();
++            symlink(&supply, self.supplies.join(format!("gip0.{index}"))).unwrap();
++            client
++        }
++    }
++
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            let _ = fs::remove_dir_all(&self.root);
++        }
++    }
++
++    #[test]
++    fn distinct_same_model_clients_use_their_own_battery_and_input_identity() {
++        let fixture = Fixture::new(Some(0x02fe));
++        let first = fixture.add(0, "Low\n", "Discharging\n");
++        let second = fixture.add(1, "Full\n", "Charging\n");
++        // Receiver identity must never substitute for the per-client input ID.
++        fs::create_dir_all(fixture.usb.join("input/input1/id")).unwrap();
++        fs::write(fixture.usb.join("input/input1/id/product"), "02fe\n").unwrap();
++        let controllers = controllers_in(&fixture.supplies);
++        assert_eq!(controllers.len(), 2);
++        assert_ne!(controllers[0].id(), controllers[1].id());
++        assert_eq!(controllers[0].device_path.as_deref(), first.to_str());
++        assert_eq!(controllers[1].device_path.as_deref(), second.to_str());
++        assert!(matches!(
++            controllers[0].battery_level,
++            Some(BatteryLevel::Low)
++        ));
++        assert!(matches!(
++            controllers[1].battery_level,
++            Some(BatteryLevel::Full)
++        ));
++        assert_eq!(controllers[0].status, Status::Discharging);
++        assert_eq!(controllers[1].status, Status::Charging);
++        for controller in controllers {
++            assert_eq!(controller.vendor_id, 0x045e);
++            assert_eq!(controller.product_id, 0x0b12);
++            assert_eq!(controller.capacity, None);
++            assert!(!controller.bluetooth);
++            assert!(matches!(
++                controller.connection_type,
++                Some(ConnectionType::Wireless)
++            ));
++        }
++    }
++
++    #[test]
++    fn unknown_or_missing_telemetry_stays_unknown_without_a_fake_percentage() {
++        let fixture = Fixture::new(Some(0x02e6));
++        let client = fixture.add(0, "unexpected", "Not charging");
++        let supply = client.join("power_supply/gip0.0");
++        for remove_attributes in [false, true] {
++            if remove_attributes {
++                fs::remove_file(supply.join("capacity_level")).unwrap();
++                fs::remove_file(supply.join("status")).unwrap();
++            }
++            let controllers = controllers_in(&fixture.supplies);
++            assert_eq!(controllers.len(), 1);
++            assert_eq!(controllers[0].capacity, None);
++            assert_eq!(controllers[0].status, Status::Unknown);
++            assert!(matches!(
++                controllers[0].battery_level,
++                Some(BatteryLevel::Unknown)
++            ));
++            assert!(matches!(
++                controllers[0].connection_type,
++                Some(ConnectionType::Wireless)
++            ));
++        }
++    }
++
++    #[test]
++    fn removing_or_unbinding_one_client_keeps_the_other() {
++        let fixture = Fixture::new(Some(0x02fe));
++        let first = fixture.add(0, "Normal", "Discharging");
++        let second = fixture.add(1, "High", "Discharging");
++        assert_eq!(controllers_in(&fixture.supplies).len(), 2);
++        fs::remove_file(first.join("driver")).unwrap();
++        assert_eq!(controllers_in(&fixture.supplies).len(), 1);
++        fs::remove_dir_all(&first).unwrap();
++        let controllers = controllers_in(&fixture.supplies);
++        assert_eq!(controllers.len(), 1);
++        assert_eq!(controllers[0].device_path.as_deref(), second.to_str());
++        fs::remove_dir_all(&second).unwrap();
++        assert!(controllers_in(&fixture.supplies).is_empty());
++    }
++
++    #[test]
++    fn a_parent_input_or_other_driver_cannot_supply_a_client_identity() {
++        let fixture = Fixture::new(Some(0x02fe));
++        let client = fixture.add(0, "High", "Discharging");
++        fs::rename(client.join("input"), fixture.usb.join("input")).unwrap();
++        assert!(controllers_in(&fixture.supplies).is_empty());
++        fs::rename(fixture.usb.join("input"), client.join("input")).unwrap();
++        fs::remove_file(client.join("driver")).unwrap();
++        let other_driver = fixture.root.join("bus/xone-gip/drivers/xone-gip-headset");
++        fs::create_dir_all(&other_driver).unwrap();
++        symlink(other_driver, client.join("driver")).unwrap();
++        assert!(controllers_in(&fixture.supplies).is_empty());
++    }
++
++    #[test]
++    fn aliases_are_deduplicated_and_wired_clients_skip_only_their_usb_parent() {
++        let fixture = Fixture::new(None);
++        let client = fixture.add(0, "Normal", "Unknown");
++        symlink(
++            client.join("power_supply/gip0.0"),
++            fixture.supplies.join("duplicate"),
++        )
++        .unwrap();
++        let controllers = controllers_in(&fixture.supplies);
++        assert_eq!(controllers.len(), 1);
++        assert!(matches!(
++            controllers[0].connection_type,
++            Some(ConnectionType::Usb)
++        ));
++        assert!(has_client_under_usb_device(&fixture.usb, &[client.clone()]));
++        assert!(!has_client_under_usb_device(
++            &fixture.usb.with_file_name("3-2.4"),
++            &[client]
++        ));
++    }
++}
+diff --git a/backend/src/controller.rs b/backend/src/controller.rs
+index f3671cf..45ea4ae 100644
+--- a/backend/src/controller.rs
++++ b/backend/src/controller.rs
+@@ -13,15 +13,36 @@ pub enum Status {
+     Unknown,
+ }
+ 
++#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
++#[serde(rename_all = "lowercase")]
++pub enum BatteryLevel {
++    Low,
++    Normal,
++    High,
++    Full,
++    Unknown,
++}
++
++#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
++#[serde(rename_all = "lowercase")]
++pub enum ConnectionType {
++    Usb,
++    Wireless,
++}
++
+ #[derive(Debug, Serialize, Deserialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct Controller {
+     pub name: String,
+     pub product_id: u16,
+     pub vendor_id: u16,
+-    pub capacity: u8,
++    pub capacity: Option<u8>,
+     pub status: Status,
+     pub bluetooth: bool,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub battery_level: Option<BatteryLevel>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub connection_type: Option<ConnectionType>,
+     #[serde(skip_serializing)]
+     pub serial_number: Option<String>,
+     #[serde(skip_serializing)]
+@@ -58,9 +79,11 @@ impl Controller {
+             name: name.to_string(),
+             vendor_id,
+             product_id,
+-            capacity,
++            capacity: Some(capacity),
+             status,
+             bluetooth,
++            battery_level: None,
++            connection_type: None,
+             serial_number,
+             device_path,
+         }
+@@ -83,9 +106,11 @@ impl Controller {
+             name: name.to_string(),
+             product_id: device_info.product_id(),
+             vendor_id: device_info.vendor_id(),
+-            capacity,
++            capacity: Some(capacity),
+             status,
+             bluetooth,
++            battery_level: None,
++            connection_type: None,
+             serial_number,
+             device_path,
+         }
+@@ -106,6 +131,21 @@ impl Controller {
+     pub fn is_discharging(&self) -> bool {
+         self.status == Status::Discharging
+     }
++
++    pub fn low_battery_message(&self) -> Option<String> {
++        if !self.is_discharging() {
++            return None;
++        }
++        match self.battery_level {
++            Some(BatteryLevel::Low) => Some(format!("{} is low on battery (Low)", self.name)),
++            // A reported level takes precedence over any estimated percentage.
++            Some(_) => None,
++            None => self
++                .capacity
++                .filter(|capacity| *capacity < 20)
++                .map(|capacity| format!("{} is low on battery ({}%)", self.name, capacity)),
++        }
++    }
+ }
+ 
+ fn hex_os_str_to_u16(hex_os_str: &OsStr) -> u16 {
+@@ -122,7 +162,7 @@ fn hex_os_str_to_u16(hex_os_str: &OsStr) -> u16 {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{hex_os_str_to_u16, Controller, Status};
++    use super::{hex_os_str_to_u16, BatteryLevel, ConnectionType, Controller, Status};
+     use std::ffi::OsStr;
+ 
+     #[test]
+@@ -131,9 +171,11 @@ mod tests {
+             name: "Test Controller".to_string(),
+             product_id: 0x045e,
+             vendor_id: 0x02ea,
+-            capacity: 0,
++            capacity: Some(0),
+             status: Status::Discharging,
+             bluetooth: false,
++            battery_level: None,
++            connection_type: None,
+             serial_number: None,
+             device_path: None,
+         };
+@@ -153,9 +195,11 @@ mod tests {
+             name: "Test Controller".to_string(),
+             product_id: 0x045e,
+             vendor_id: 0x02ea,
+-            capacity: 0,
++            capacity: Some(0),
+             status: Status::Discharging,
+             bluetooth: false,
++            battery_level: None,
++            connection_type: None,
+             serial_number: Some("1234567890".to_string()),
+             device_path: Some("/dev/input/js0".to_string()),
+         };
+@@ -172,9 +216,11 @@ mod tests {
+             name: "Test Controller".to_string(),
+             product_id: 0x045e,
+             vendor_id: 0x02ea,
+-            capacity: 0,
++            capacity: Some(0),
+             status: Status::Discharging,
+             bluetooth: false,
++            battery_level: None,
++            connection_type: None,
+             device_path: Some("/dev/input/js0".to_string()),
+             serial_number: Some("1234567890".to_string()),
+         };
+@@ -186,6 +232,54 @@ mod tests {
+         assert_eq!(controller.id(), "746:1118");
+     }
+ 
++    #[test]
++    fn coarse_battery_does_not_fabricate_a_percentage_or_false_alarm() {
++        let mut controller = Controller {
++            name: "Xbox Series X/S".into(),
++            vendor_id: 0x045e,
++            product_id: 0x0b12,
++            capacity: None,
++            status: Status::Discharging,
++            bluetooth: false,
++            battery_level: Some(BatteryLevel::Normal),
++            connection_type: Some(ConnectionType::Wireless),
++            serial_number: None,
++            device_path: Some("/sys/devices/example/gip0.0".into()),
++        };
++        let json = serde_json::to_value(&controller).unwrap();
++        assert!(json["capacity"].is_null());
++        assert_eq!(json["batteryLevel"], "normal");
++        assert_eq!(json["connectionType"], "wireless");
++        assert!(json.get("devicePath").is_none());
++        for level in [
++            BatteryLevel::Normal,
++            BatteryLevel::High,
++            BatteryLevel::Full,
++            BatteryLevel::Unknown,
++        ] {
++            controller.battery_level = Some(level);
++            controller.capacity = Some(0); // Ignore any compatibility estimate.
++            assert!(controller.low_battery_message().is_none());
++        }
++        controller.battery_level = Some(BatteryLevel::Low);
++        assert_eq!(
++            controller.low_battery_message().unwrap(),
++            "Xbox Series X/S is low on battery (Low)"
++        );
++        controller.status = Status::Charging;
++        assert!(controller.low_battery_message().is_none());
++        controller.status = Status::Unknown;
++        assert!(controller.low_battery_message().is_none());
++        controller.battery_level = None;
++        controller.status = Status::Discharging;
++        controller.capacity = None;
++        assert!(controller.low_battery_message().is_none());
++        controller.capacity = Some(19);
++        assert!(controller.low_battery_message().unwrap().ends_with("(19%)"));
++        controller.capacity = Some(20);
++        assert!(controller.low_battery_message().is_none());
++    }
++
+     #[test]
+     fn test_hex_os_str_to_u16() {
+         let os_str = OsStr::new("045e");
+diff --git a/backend/src/main.rs b/backend/src/main.rs
+index e72feab..90c5863 100644
+--- a/backend/src/main.rs
++++ b/backend/src/main.rs
+@@ -31,6 +31,20 @@ pub struct AppState {
+ async fn main() {
+     let args: Vec<String> = std::env::args().collect();
+ 
++    // Read-only diagnosis without binding the live plugin's HTTP port.
++    if args.len() == 2 && args[1] == "--list-controllers" {
++        match api::controllers().and_then(|controllers| {
++            serde_json::to_string_pretty(&controllers).map_err(Into::into)
++        }) {
++            Ok(json) => println!("{json}"),
++            Err(error) => {
++                eprintln!("Controller discovery failed: {error}");
++                std::process::exit(1);
++            }
++        }
++        return;
++    }
++
+     if args.len() != 3 {
+         panic!("Error: Expected 2 arguments, but got {}", args.len() - 1);
+     }
+diff --git a/backend/src/ws.rs b/backend/src/ws.rs
+index da43bc0..6012b90 100644
+--- a/backend/src/ws.rs
++++ b/backend/src/ws.rs
+@@ -94,7 +94,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+             };
+ 
+             for controller in controllers {
+-                let low_battery = controller.capacity < 20 && controller.is_discharging();
++                let message = controller.low_battery_message();
++                let low_battery = message.is_some();
+                 debug!(
+                     "Controller {} is low battery: {}",
+                     controller.name, low_battery
+@@ -116,10 +117,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+                     );
+ 
+                     if first_alert || last_alert_secs_ago >= BATTERY_ALERT_INTERVAL.as_secs() {
+-                        let message = format!(
+-                            "{} is low on battery ({}%)",
+-                            controller.name, controller.capacity
+-                        );
++                        let message = message.unwrap();
+                         info!("Sending notification: {}", message);
+ 
+                         if sender.send(Message::Text(message)).await.is_ok() {
+diff --git a/src/components/BatteryIcon.tsx b/src/components/BatteryIcon.tsx
+index 33b58d0..f6d8b0a 100644
+--- a/src/components/BatteryIcon.tsx
++++ b/src/components/BatteryIcon.tsx
+@@ -1,25 +1,22 @@
+ import { BsBatteryCharging } from "react-icons/bs";
+ import { IController } from "../types";
+-import { FaBatteryEmpty, FaBatteryFull, FaBatteryHalf, FaBatteryQuarter, FaBatteryThreeQuarters } from "react-icons/fa";
++import { FaBatteryEmpty, FaBatteryFull, FaBatteryHalf, FaBatteryQuarter, FaBatteryThreeQuarters, FaRegQuestionCircle } from "react-icons/fa";
++import { getBatteryPresentation } from "../controllerPresentation";
+ 
+ type BatteryIconProps = {
+   controller: IController;
+ };
+ 
+ const BatteryIcon = ({ controller }: BatteryIconProps) => {
+-  return (
+-    controller.status === "charging" ?
+-      <BsBatteryCharging /> :
+-      controller.capacity <= 0 ?
+-        <FaBatteryEmpty /> :
+-        controller.capacity <= 25 ?
+-          <FaBatteryQuarter /> :
+-          controller.capacity <= 50 ?
+-            <FaBatteryHalf /> :
+-              controller.capacity <= 75 ?
+-                <FaBatteryThreeQuarters />:
+-                <FaBatteryFull />
+-  );
++  switch (getBatteryPresentation(controller).icon) {
++    case "charging": return <BsBatteryCharging />;
++    case "empty": return <FaBatteryEmpty />;
++    case "quarter": return <FaBatteryQuarter />;
++    case "half": return <FaBatteryHalf />;
++    case "threeQuarters": return <FaBatteryThreeQuarters />;
++    case "full": return <FaBatteryFull />;
++    default: return <FaRegQuestionCircle />;
++  }
+ };
+ 
+ export default BatteryIcon;
+diff --git a/src/components/Controller.tsx b/src/components/Controller.tsx
+index ce26228..522336d 100644
+--- a/src/components/Controller.tsx
++++ b/src/components/Controller.tsx
+@@ -5,11 +5,12 @@ import {
+ } from "@decky/ui";
+ 
+ import { IconContext } from "react-icons";
+-import { BiBluetooth, BiUsb } from "react-icons/bi";
++import { BiBluetooth, BiBroadcast, BiUsb } from "react-icons/bi";
+ 
+ import BatteryIcon from "./BatteryIcon";
+ import VendorIcon from "./VendorIcon";
+ import { IController } from "../types";
++import { getBatteryPresentation, getConnectionPresentation } from "../controllerPresentation";
+ 
+ const FieldWithSeparator = joinClassNames(gamepadDialogClasses.Field, gamepadDialogClasses.WithBottomSeparatorStandard);
+ 
+@@ -18,27 +19,29 @@ type ControllerProps = {
+ };
+ 
+ const Controller = ({ controller }: ControllerProps) => {
++  const battery = getBatteryPresentation(controller);
++  const connection = getConnectionPresentation(controller);
+   return (
+     <PanelSectionRow>
+       <div className={FieldWithSeparator}>
+         <div className={gamepadDialogClasses.FieldLabelRow}>
+           <div className={gamepadDialogClasses.FieldLabel}>
+             <IconContext.Provider value={{ style: { verticalAlign: 'middle', marginRight: '10px' } }}>
+-              {controller.bluetooth ? <BiBluetooth /> : <BiUsb />}
++              <span title={connection.label} aria-label={connection.label}>
++                {connection.kind === "wireless" ? <BiBroadcast /> : connection.kind === "bluetooth" ? <BiBluetooth /> : <BiUsb />}
++              </span>
+             </IconContext.Provider>
+             <IconContext.Provider value={{ style: { verticalAlign: 'middle', marginRight: '5px' } }}>
+               <VendorIcon controller={controller}/>
+             </IconContext.Provider>
+             {controller.name}
++            {connection.kind === "wireless" ? " · Xbox Wireless" : null}
+           </div>
+           {
+-            (controller.capacity > 0 || controller.status !== "unknown") &&
+-            <div className={gamepadDialogClasses.FieldChildrenInner}>
++            <div className={gamepadDialogClasses.FieldChildrenInner} aria-label={battery.description}>
+               {
+-                // only show battery capacity for non-MS vendors unless capacity is > 0 and over BT
+-                // since we don't have the battery capacity yet for Xbox over USB
+-                (controller.vendorId != 0x045E || (controller.capacity > 0 && controller.bluetooth)) &&
+-                <span style={{ display: "inline-block", textAlign: "right", }}>{controller.capacity}%</span>
++                battery.label !== null ?
++                  <span style={{ display: "inline-block", textAlign: "right", }}>{battery.label}</span> : null
+               }
+               <IconContext.Provider value={{ style: { verticalAlign: 'middle', marginLeft: "6px" }, size: '2em' }}>
+                 <BatteryIcon controller={controller}/>
+diff --git a/src/components/ControllersView.tsx b/src/components/ControllersView.tsx
+index e8d0786..675155a 100644
+--- a/src/components/ControllersView.tsx
++++ b/src/components/ControllersView.tsx
+@@ -8,11 +8,12 @@ type ControllersViewProps = {
+ const ControllersView = ({ controllers }: ControllersViewProps) => {
+   return (
+     controllers
++      .slice()
+       .sort((a, b) => a.name.localeCompare(b.name))
+-      .map(controller => (
++      .map((controller, index) => (
+         <Controller
+           controller={controller}
+-          key={`${controller.vendorId}:${controller.productId}`}
++          key={`${controller.vendorId}:${controller.productId}:${index}`}
+         />
+       ))
+   );
+diff --git a/src/controllerPresentation.ts b/src/controllerPresentation.ts
+new file mode 100644
+index 0000000..9fd5734
+--- /dev/null
++++ b/src/controllerPresentation.ts
+@@ -0,0 +1,74 @@
++import type { IController } from "./types";
++
++export type BatteryIconKind =
++  | "charging"
++  | "empty"
++  | "quarter"
++  | "half"
++  | "threeQuarters"
++  | "full"
++  | "unknown";
++
++export interface BatteryPresentation {
++  label: string | null;
++  icon: BatteryIconKind;
++  description: string;
++}
++
++export function getBatteryPresentation(controller: IController): BatteryPresentation {
++  const charging = controller.status === "charging";
++
++  // Receiver levels describe ranges, not percentages. Even a contradictory
++  // numeric capacity must not turn a coarse report into a precise percentage.
++  if (controller.batteryLevel !== undefined) {
++    let label: string;
++    let icon: BatteryIconKind;
++    switch (controller.batteryLevel) {
++      case "low": label = "Low"; icon = "quarter"; break;
++      case "normal": label = "Normal"; icon = "half"; break;
++      case "high": label = "High"; icon = "threeQuarters"; break;
++      case "full": label = "Full"; icon = "full"; break;
++      default: label = charging ? "Charging" : "Unknown"; icon = "unknown";
++    }
++    return {
++      label,
++      icon: charging ? "charging" : icon,
++      description: charging && label === "Charging" ? "Battery charging"
++        : charging ? `Battery ${label.toLowerCase()}, charging` : `Battery ${label.toLowerCase()}`,
++    };
++  }
++
++  const capacity = controller.capacity;
++  const hasCapacity = typeof capacity === "number" && Number.isFinite(capacity) && capacity >= 0 && capacity <= 100;
++  // The legacy Xbox Bluetooth backend uses zero for failed reads. Preserve
++  // that ambiguity until it can distinguish a real zero from an absent value.
++  const unknownXboxZero = controller.vendorId === 0x045e && getConnectionPresentation(controller).kind === "bluetooth"
++    && capacity === 0 && controller.status === "unknown";
++  if (hasCapacity && !unknownXboxZero) {
++    const icon: BatteryIconKind = capacity === 0 ? "empty"
++      : capacity <= 25 ? "quarter"
++      : capacity <= 50 ? "half"
++      : capacity <= 75 ? "threeQuarters" : "full";
++    return {
++      label: `${capacity}%`,
++      icon: charging ? "charging" : icon,
++      description: `Battery ${capacity}%${charging ? ", charging" : ""}`,
++    };
++  }
++
++  if (charging) return { label: null, icon: "charging", description: "Battery charging" };
++  if (controller.status === "full") return { label: "Full", icon: "full", description: "Battery full" };
++  return { label: "Unknown", icon: "unknown", description: "Battery level unknown" };
++}
++
++export function getConnectionPresentation(controller: IController): {
++  kind: "bluetooth" | "wireless" | "usb";
++  label: string;
++} {
++  if (controller.connectionType === "wireless") {
++    return { kind: "wireless", label: "Xbox Wireless Adapter" };
++  }
++  if (controller.connectionType === "usb") return { kind: "usb", label: "USB" };
++  if (controller.bluetooth) return { kind: "bluetooth", label: "Bluetooth" };
++  return { kind: "usb", label: "USB" };
++}
+diff --git a/src/index.tsx b/src/index.tsx
+index 6982b9f..72336d8 100755
+--- a/src/index.tsx
++++ b/src/index.tsx
+@@ -8,11 +8,12 @@ import { setupNotifications } from "./notifications";
+ export default definePlugin(() => {
+   // Starts a self-healing websocket connection to the backend to listen for push notifications.
+   // Must be called here to maintain the connection regardless of whether the plugin is open or not
+-  setupNotifications();
++  const stopNotifications = setupNotifications();
+ 
+   return {
+     title: <PluginTitle value="Controller Tools"/>,
+     content: <PluginContent />,
+     icon: <BsController />,
++    onDismount: stopNotifications,
+   };
+ });
+diff --git a/src/notifications.ts b/src/notifications.ts
+index 0d4a422..14e2a90 100644
+--- a/src/notifications.ts
++++ b/src/notifications.ts
+@@ -2,8 +2,13 @@ import { toaster, ToastData } from '@decky/api';
+ import { log, error } from './logger';
+ 
+ export const setupNotifications = () => {
++  let stopped = false;
++  let socket: WebSocket | undefined;
++  let retryTimer: ReturnType<typeof setTimeout> | undefined;
++
+   const handleMessage = (e: MessageEvent) => {
+-    if (e.type !== 'text' || typeof e.data !== 'string') {
++    if (stopped) return;
++    if (e.type !== 'message' || typeof e.data !== 'string') {
+       error('Unexpected message type', e.type);
+       return;
+     }
+@@ -18,7 +23,9 @@ export const setupNotifications = () => {
+   }
+ 
+   const setupWebsocket = (): void => {
++    if (stopped) return;
+     const ws = new WebSocket('ws://localhost:33220/ws');
++    socket = ws;
+ 
+     ws.onopen = () => {
+       log('WebSocket connected');
+@@ -30,9 +37,7 @@ export const setupNotifications = () => {
+ 
+     ws.onclose = (e: CloseEvent) => {
+       log('Socket is closed. Reconnect will be attempted in 10 seconds.', e.reason);
+-      setTimeout(() => {
+-        setupWebsocket();
+-      }, 10000);
++      if (!stopped) retryTimer = setTimeout(setupWebsocket, 10000);
+     };
+ 
+     ws.onerror = (err: Event) => {
+@@ -42,4 +47,9 @@ export const setupNotifications = () => {
+   }
+ 
+   setupWebsocket();
++  return () => {
++    stopped = true;
++    if (retryTimer !== undefined) clearTimeout(retryTimer);
++    socket?.close();
++  };
+ }
+\ No newline at end of file
+diff --git a/src/types.d.ts b/src/types.d.ts
+index c3d73a7..c126d75 100644
+--- a/src/types.d.ts
++++ b/src/types.d.ts
+@@ -17,7 +17,9 @@ export interface IController {
+   name: string;
+   productId: number;
+   vendorId: number;
+-  capacity: number;
++  capacity: number | null;
++  batteryLevel?: "low" | "normal" | "high" | "full" | "unknown";
++  connectionType?: "usb" | "wireless";
+   status: string;
+   bluetooth: boolean;
+ }
+diff --git a/tests/controller-presentation.test.mjs b/tests/controller-presentation.test.mjs
+new file mode 100644
+index 0000000..b1157c8
+--- /dev/null
++++ b/tests/controller-presentation.test.mjs
+@@ -0,0 +1,76 @@
++// Node 22.6+: node --experimental-strip-types --test tests/controller-presentation.test.mjs
++import assert from "node:assert/strict";
++import test from "node:test";
++import { getBatteryPresentation, getConnectionPresentation } from "../src/controllerPresentation.ts";
++
++const base = { name: "Controller", vendorId: 0x054c, productId: 1, capacity: null, status: "unknown", bluetooth: false };
++const receiver = { ...base, vendorId: 0x045e, connectionType: "wireless" };
++
++test("receiver levels have readable labels and range icons without invented percentages", () => {
++  for (const [batteryLevel, label, icon] of [
++    ["low", "Low", "quarter"], ["normal", "Normal", "half"],
++    ["high", "High", "threeQuarters"], ["full", "Full", "full"],
++  ]) {
++    for (const capacity of [null, 0, 68, 100]) {
++      const result = getBatteryPresentation({ ...receiver, batteryLevel, capacity });
++      assert.equal(result.label, label);
++      assert.equal(result.icon, icon);
++      assert.ok(!result.description.includes("%"));
++    }
++  }
++});
++
++test("unknown receiver and missing battery values remain neutral", () => {
++  for (const controller of [receiver, { ...receiver, batteryLevel: "unknown" },
++    { ...receiver, batteryLevel: "unknown", capacity: 0 },
++    { ...receiver, batteryLevel: "unrecognized", capacity: 100 }, base]) {
++    const result = getBatteryPresentation(controller);
++    assert.equal(result.label, "Unknown");
++    assert.equal(result.icon, "unknown");
++    assert.ok(!result.description.includes("%"));
++  }
++});
++
++test("precise controllers keep percentages including a real zero", () => {
++  for (const [capacity, icon] of [[0, "empty"], [1, "quarter"], [25, "quarter"],
++    [26, "half"], [50, "half"], [51, "threeQuarters"], [75, "threeQuarters"], [76, "full"], [100, "full"]]) {
++    assert.equal(getBatteryPresentation({ ...base, capacity }).label, `${capacity}%`);
++    assert.equal(getBatteryPresentation({ ...base, capacity }).icon, icon);
++  }
++});
++
++test("malformed precise readings never appear as zero or full batteries", () => {
++  for (const capacity of [null, undefined, -1, 101, NaN, Infinity, "50"]) {
++    const result = getBatteryPresentation({ ...base, capacity });
++    assert.equal(result.icon, "unknown");
++    assert.equal(result.label, "Unknown");
++  }
++});
++
++test("charging and full states do not require a precise capacity", () => {
++  assert.equal(getBatteryPresentation({ ...receiver, batteryLevel: "normal", status: "charging" }).icon, "charging");
++  assert.equal(getBatteryPresentation({ ...receiver, batteryLevel: "normal", status: "charging" }).label, "Normal");
++  assert.equal(getBatteryPresentation({ ...base, status: "charging" }).icon, "charging");
++  assert.equal(getBatteryPresentation({ ...base, status: "full" }).label, "Full");
++  assert.equal(getBatteryPresentation({ ...base, capacity: 50, status: "charging" }).label, "50%");
++});
++
++test("Xbox USB missing battery stays neutral and legacy Bluetooth failure sentinel stays untrusted", () => {
++  const xbox = { ...base, vendorId: 0x045e };
++  const usb = getBatteryPresentation({ ...xbox, connectionType: "usb" });
++  assert.equal(usb.label, "Unknown");
++  assert.equal(usb.icon, "unknown");
++  assert.equal(getBatteryPresentation({ ...xbox, capacity: 100 }).label, "100%");
++  assert.equal(getBatteryPresentation({ ...xbox, bluetooth: true, capacity: 0 }).icon, "unknown");
++  assert.equal(getBatteryPresentation({ ...xbox, bluetooth: true, capacity: 0, status: "discharging" }).label, "0%");
++  assert.equal(getBatteryPresentation({ ...xbox, bluetooth: true, capacity: 60 }).label, "60%");
++  assert.equal(getBatteryPresentation({ ...xbox, connectionType: "usb", bluetooth: true, capacity: 0 }).label, "0%");
++});
++
++test("receiver link is explicitly Xbox Wireless while legacy transports keep their icons", () => {
++  assert.deepEqual(getConnectionPresentation(receiver), { kind: "wireless", label: "Xbox Wireless Adapter" });
++  assert.equal(getConnectionPresentation({ ...receiver, bluetooth: true }).kind, "wireless");
++  assert.deepEqual(getConnectionPresentation({ ...base, bluetooth: true }), { kind: "bluetooth", label: "Bluetooth" });
++  assert.deepEqual(getConnectionPresentation({ ...base, connectionType: "usb", bluetooth: true }), { kind: "usb", label: "USB" });
++  assert.deepEqual(getConnectionPresentation(base), { kind: "usb", label: "USB" });
++});
+diff --git a/tests/notifications.test.mjs b/tests/notifications.test.mjs
+new file mode 100644
+index 0000000..8518b11
+--- /dev/null
++++ b/tests/notifications.test.mjs
+@@ -0,0 +1,60 @@
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import test from 'node:test';
++import vm from 'node:vm';
++import ts from 'typescript';
++
++function harness() {
++  const sockets = [], toasts = [], timers = new Map();
++  let nextTimer = 0;
++  class Socket {
++    constructor() { sockets.push(this); }
++    close() { this.closed = true; this.onclose?.({ reason: 'closed' }); }
++  }
++  const code = ts.transpileModule(readFileSync(new URL('../src/notifications.ts', import.meta.url), 'utf8'), {
++    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
++  }).outputText;
++  const context = {
++    exports: {}, WebSocket: Socket,
++    require(name) {
++      if (name === '@decky/api') return { toaster: { toast: value => toasts.push(value) } };
++      if (name === './logger') return { log() {}, error() {} };
++      throw new Error(`Unexpected dependency ${name}`);
++    },
++    setTimeout(fn) { timers.set(++nextTimer, fn); return nextTimer; },
++    clearTimeout(id) { timers.delete(id); },
++  };
++  vm.runInNewContext(code, context);
++  const stop = context.exports.setupNotifications();
++  return { sockets, toasts, timers, stop };
++}
++
++test('browser message events deliver low-battery text; non-text data is ignored', () => {
++  const h = harness();
++  h.sockets[0].onmessage({ type: 'message', data: 'Xbox is low on battery (Low)' });
++  assert.equal(h.toasts.length, 1);
++  assert.equal(h.toasts[0].body, 'Xbox is low on battery (Low)');
++  h.sockets[0].onmessage({ type: 'message', data: new ArrayBuffer(1) });
++  assert.equal(h.toasts.length, 1);
++  h.stop();
++});
++
++test('unloading a plugin closes its socket without scheduling a reconnect', () => {
++  const h = harness();
++  h.stop();
++  assert.equal(h.sockets[0].closed, true);
++  assert.equal(h.timers.size, 0);
++  h.sockets[0].onmessage({ type: 'message', data: 'late alert' });
++  assert.equal(h.toasts.length, 0);
++});
++
++test('unloading clears a pending reconnect and prevents stale callbacks reconnecting', () => {
++  const h = harness();
++  h.sockets[0].onclose({ reason: 'backend restart' });
++  assert.equal(h.timers.size, 1);
++  const retry = [...h.timers.values()][0];
++  h.stop();
++  assert.equal(h.timers.size, 0);
++  retry();
++  assert.equal(h.sockets.length, 1);
++});

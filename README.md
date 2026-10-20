@@ -28,6 +28,7 @@ See [installation and rollback](docs/INSTALLATION.md) for prerequisites, argumen
 | Fix | What is available | Status |
 | --- | --- | --- |
 | [Controller buttons and rear paddles](fixes/oxp3-controller/README.md) | PR 13 HID driver, DKMS package, InputPlumber mappings | Driver/profile hardware tested; menu installer available |
+| [Xbox wireless battery](fixes/controller-tools-xone-battery/README.md) | Controller Tools xone discovery, coarse battery levels and notifications | Installed; one-controller display confirmed; manual build |
 | [Controller navigation in Limine](fixes/boot-controller/README.md) | Tested native gamepad patch, pinned EFI build, one-time staging and rollback | Hardware tested; build the EFI image first |
 | [Power button](fixes/power-button/README.md) | CachyOS native power-button daemon | Sleep/wake hardware tested; installer available |
 | [Intel TDP and MangoHud](fixes/intel-tdp-mangohud/README.md) | RAPL backend, 8–40 W policy, narrow permissions, telemetry patch | Backend/telemetry hardware tested; MangoHud build separate |

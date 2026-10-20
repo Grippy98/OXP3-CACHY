@@ -5,6 +5,7 @@ Upstream files keep their existing copyright and license notices. No project-wid
 | Component | License material |
 | --- | --- |
 | Linux HID driver | [GPL-2.0](fixes/oxp3-controller/kernel/GPL-2.0), [COPYING](fixes/oxp3-controller/kernel/COPYING) |
+| Controller Tools battery patch | [GPL-3.0](fixes/controller-tools-xone-battery/LICENSE) |
 | InputPlumber | [GPL-3.0](fixes/oxp3-controller/inputplumber/LICENSE) |
 | Limine and bundled reference headers | [Limine COPYING](fixes/boot-controller/COPYING), component licenses under `reference-headers/` |
 | Gamescope runtime | [License](fixes/internal-panel-refresh/gamescope/accepted-runtime/LICENSE) |
