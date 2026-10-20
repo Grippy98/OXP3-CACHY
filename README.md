@@ -1,6 +1,6 @@
 # OXP3-CACHY
 
-Fixes for the **Intel ONEXPLAYER 3 running CachyOS / Deckify**. Each fix has its own README, technical writeup, source and rollback instructions. The tested device uses Intel Panther Lake / xe graphics; this is not an AMD handheld fix pack.
+Fixes for the **Intel ONEXPLAYER 3 running CachyOS / Deckify**. Each fix has its own README, technical writeup, source and rollback instructions.
 
 ## Start here
 
