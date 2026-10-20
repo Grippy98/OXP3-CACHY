@@ -26,6 +26,20 @@ Apply [FreeSync-over-GMP v3](freesync-gmp/README.md) last for the limited positi
 
 Both experimental parameters default off. For an explicitly controlled, separately named **Xe** test boot only, v3 uses `xe.enable_pcon_vrr=2 xe.pcon_freesync_sdp=1`; an i915 system uses the `i915.` prefix. No installer writes these parameters or changes a boot default. Keep the accepted `7.2.9-onex3-vrr-test` kernel and working controller/picture path available.
 
+## Recovering a black TV picture
+
+A Steam restart during an experimental PCON boot restored the saved per-app VRR preference at 4K144 HDR and caused a black TV picture. Disabling VRR in the running Gamescope session restored the picture, confirmed by the owner:
+
+```sh
+DISPLAY=:0 xprop -root -f GAMESCOPE_VRR_ENABLED 32c -set GAMESCOPE_VRR_ENABLED 0
+```
+
+Run this as the user owning the Gaming Mode session; `:0` is the Gamescope X display used in this test. The active CRTC then reported `VRR_ENABLED=0`, while 3840×2160 at 144 Hz with HDR remained active. This is temporary signal recovery: Steam can restore its saved VRR preference again.
+
+For persistent recovery, exit the opt-in PCON experiment and boot the accepted `7.2.9-onex3-vrr-test` default, preserving its internal-panel VRR support. Steam's VRR preference is per performance profile rather than per monitor. The current Gamescope Lua display-profile API has no per-output VRR capability override; adding an unsupported Lua setting does not protect the TV.
+
+After returning to the accepted kernel, the TV connector reported no VRR capability and its active CRTC kept VRR off, while the built-in panel retained VRR capability. The output remained 4K144 with HDR and Decky loaded normally.
+
 ## Build and host tests
 
 Read [manual build prerequisites and recipes](recipes/README.md) and [v3 build order](freesync-gmp/recipes/README.md). These require a reconstructed/copied accepted baseline; they do not contain a complete kernel tree or device firmware. Package revisions 1–3 historically share `7.2.9-onex3-pcon-vrr-test`, so record the package version and source identity when testing.
