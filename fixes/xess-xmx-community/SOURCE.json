@@ -28,12 +28,32 @@
     "hashes": "Exact asset URLs and SHA256 values are pinned in fetch-compiler.py."
   },
   "tested_proton": {
-    "game": "hotfix-20261007-x86_64",
+    "game": "experimental-11.0-20261014-x86_64",
+    "game_startup": "Title, first-run screen, main menu and owner-accepted 1080p gameplay reached with the private runtime.",
+    "earlier_startup_trials": [
+      "hotfix-20261007-x86_64"
+    ],
     "separate_shim_load_test": "experimental-11.0-20261014-x86_64"
   },
   "game_xess": {
     "super_resolution": "2.0.2.68",
     "frame_generation": "1.3.1.78",
     "low_latency": "1.3.2.10"
+  },
+  "game_results": {
+    "game": "STAR WARS: Galactic Racer",
+    "steam_appid": 4078430,
+    "owner_report": "1080p feels good and shows roughly 80 FPS; 4K was difficult to play at roughly 40 FPS.",
+    "current_saved_settings": {
+      "resolution": "1920x1080",
+      "super_resolution": "XeSS Balanced",
+      "frame_generation": "XeFG On4x",
+      "low_latency": true,
+      "hdr": false
+    },
+    "reported_counter": "Steam/MangoHud performance overlay",
+    "report_limits": "Initially selected 2x, later saved 4x; multiplier active during the FPS report and whether the overlay counted generated frames are unknown. No base rendering rate or controlled performance gain is established.",
+    "runtime_checks": "Private ANV and shim mapped; fresh frame-generation library callers; 114 successful kernel compilations, no recorded compilation failures or recent GPU hang/reset during the check.",
+    "pending": "Completed XMX dispatch, controlled SR/FG correctness and performance comparisons, and HDR."
   }
 }

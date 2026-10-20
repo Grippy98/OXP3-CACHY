@@ -6,9 +6,11 @@ The community implementation is by HHHHanasak1 and contributors; kas5852 contrib
 
 ## Current status
 
-On the Intel OXP3, the source-built private Mesa 26.3.0-rc1 driver and rebuilt shim both loaded in **STAR WARS: Galactic Racer**, Steam AppID `4078430`, under Steam-selected Proton Hotfix `hotfix-20261007-x86_64`. The final Wine process received the intended environment. The game contains XeSS `2.0.2.68` and XeFG `1.3.1.78`; a fresh driver canary and 30 compiled CM kernels were observed without compilation failures. The observed shim callers were from super resolution. A rebuilt convolution kernel matched the game-generated CMK code byte-for-byte and contained 96 DPAS matrix instructions.
+On the Intel OXP3, **STAR WARS: Galactic Racer**, Steam AppID `4078430`, reached its title, first-run screen and main menu with the private Mesa 26.3.0-rc1 driver and rebuilt shim under **Proton Experimental `experimental-11.0-20261014-x86_64`**. The actual Wine process mapped the private runtime and received the intended environment. The game contains XeSS `2.0.2.68` and XeFG `1.3.1.78`. The initial super-resolution trial compiled 30 CM kernels without failures; a rebuilt convolution kernel matched the game-generated CMK code byte-for-byte and contained 96 DPAS matrix instructions.
 
-**Galactic Racer has not yet completed startup in the trial, so actual kernel dispatch, XMX execution, visual correctness, frame generation and HDR are not verified.** The normal XMX launch, the same private driver with generic fallback, and the stock-driver control all remained at the launch screen during observation. The stock control was still doing CPU/shader-cache work; this does not establish that XMX caused the delay. In-game XeSS and 2× frame-generation selection and the owner's visual test are pending. Loading the driver, recognizing the canary and compiling kernels do not establish those results. No comparative FPS gain is claimed.
+The owner subsequently reported that **1080p feels good and shows roughly 80 FPS**, while 4K was difficult to play at roughly 40 FPS. The reported counter was Steam/MangoHud's performance overlay. The current saved configuration is **1920×1080, XeSS Balanced, native XeFG 4× and XeLL enabled, with game HDR off**. The initial selection was 2×; the multiplier active during the owner's report and whether the overlay counted generated frames have not been established, so those figures do not identify the base rendering rate or a frame-generation gain.
+
+The running game mapped both private components, fresh `libxess_fg.dll` callers were observed, and 114 kernels compiled successfully with no recorded compilation failure. No recent GPU hang/reset was observed during this check. **Completed XMX dispatch, controlled SR/FG correctness and performance comparisons, and HDR remain unverified.** A canary, compiled kernels and saved settings do not establish those results. Earlier Proton Hotfix `hotfix-20261007-x86_64` startup trials, including generic-fallback and stock-driver controls, did not reach the game during observation; the cause was not established.
 
 ## What this changes
 
@@ -24,9 +26,9 @@ Do not run the upstream global installer as part of this workflow. Keep the priv
 
 ## Build the private package
 
-Use a normal user and a Linux x86-64 build environment compatible with the target CachyOS libraries. The source build requires a C/C++ toolchain, Git, Meson, Ninja and Mesa's ANV dependencies, including LLVM, Clang, libclc, SPIR-V tools/translator, glslang, libdrm, Wayland/X11/XCB, expat, zlib, zstd and libelf development dependencies checked by Meson. Python 3.12+ is required by the pinned runtime helper. The verified compiler fetcher additionally needs `ar` and, when the Python standard library cannot read zstd, the `zstd` command. The integration build used a private Python environment with PyYAML `6.0.3`, PLY `3.11`, pyelftools `0.32` and pefile `2024.8.26`.
+Use a normal user and a Linux x86-64 build environment compatible with the target CachyOS libraries. The source build requires a C/C++ toolchain, Git, Meson, Ninja and Mesa's ANV dependencies, including LLVM, Clang, libclc, SPIR-V tools/translator, glslang, libdrm, Wayland/X11/XCB, expat, zlib, zstd and libelf development dependencies checked by Meson. Python 3.12+ is required by the pinned runtime helper; the Mesa helper checks for Mako, packaging, PyYAML and PLY. The shim additionally needs CMake and the verified LLVM-MinGW toolchain. The verified compiler fetcher needs `ar` and, when the Python standard library cannot read zstd, the `zstd` command. The integration build used a private Python environment with PyYAML `6.0.3`, PLY `3.11`, pyelftools `0.32` and pefile `2024.8.26`.
 
-The helpers take absolute paths as positional arguments; they do not install a system driver or configure Steam. Use fresh, dedicated build directories whose parents already exist. On Linux:
+The helpers take absolute paths as positional arguments; they do not install a system driver or configure Steam. The Mesa helper also stages the pinned compiler helper scripts, an empty kernels directory and component licenses. Use fresh, dedicated build directories whose parents already exist. Run these commands from this folder on Linux:
 
 ```sh
 export PACKAGE="$HOME/.local/lib/oxp3-xess-community/20261018"
@@ -47,7 +49,7 @@ See [build-mesa.sh](build-mesa.sh), [build-shim.sh](build-shim.sh) and [fetch-co
 
 ## Use for one game
 
-Keep the game's existing compatibility selection for the first trial. Galactic Racer used Steam-selected **Proton Hotfix `hotfix-20261007-x86_64`**; a separate shim load test passed under Proton Experimental 11 dated 2026-10-14. GE-Proton has not been validated here; some versions rewrite `INTC_ALT_DRIVER_EXTENSIONS_PATH`. Replace the example checkout path below with the actual absolute path. Preserve any existing game launch settings before editing them.
+For Galactic Racer, select the tested **Proton Experimental 11, `experimental-11.0-20261014-x86_64`**. Earlier Hotfix startup trials did not complete during observation; this does not isolate the cause of that delay. For other games, preserve the existing compatibility selection as a baseline. GE-Proton has not been validated here; some versions rewrite `INTC_ALT_DRIVER_EXTENSIONS_PATH`. Replace the example checkout path below with the actual absolute path. Preserve any existing game launch settings before editing them.
 
 In Steam's launch options for the selected game:
 
