@@ -28,6 +28,9 @@ class BatteryFixture:
         (self.battery / "type").write_text("Battery\n")
         self.threshold = self.battery / provider.ATTRIBUTE
         self.threshold.write_text("80\n")
+        self.behaviour = self.battery / provider.BEHAVIOUR_ATTRIBUTE
+        self.behaviour_writes = []
+        self.set_kernel_mode("inhibit-charge-awake")
         supply = self.root / "sys/class/power_supply"
         supply.mkdir(parents=True)
         (supply / "BAT0").symlink_to(self.battery)
@@ -36,7 +39,20 @@ class BatteryFixture:
         (driver / "firmware_node").symlink_to(self.acpi)
 
     def backend(self):
-        return provider.ChargeLimitBackend(self.root)
+        backend = provider.ChargeLimitBackend(self.root)
+        write_behaviour = backend._write_behaviour
+
+        def emulate_kernel_write(mode):
+            write_behaviour(mode)
+            self.behaviour_writes.append(self.behaviour.read_text())
+            # A real sysfs file renders the supported list on subsequent reads.
+            self.set_kernel_mode(mode)
+
+        backend._write_behaviour = emulate_kernel_write
+        return backend
+
+    def set_kernel_mode(self, mode):
+        self.behaviour.write_text(" ".join(f"[{item}]" if item == mode else item for item in ("auto", "inhibit-charge", "inhibit-charge-awake")) + "\n")
 
 
 class ProviderTests(unittest.TestCase):
@@ -51,6 +67,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(backend.status(), {
             "supported": True, "battery": "BAT0", "raw_threshold_percent": 80,
             "max_charge_level": 80, "suggested_minimum_limit": 50,
+            "charge_behaviour": {"mode": "inhibit-charge-awake", "supported_modes": ["auto", "inhibit-charge", "inhibit-charge-awake"]},
         })
         self.assertEqual(self.fixture.threshold.read_text(), "80\n")
         self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, before)
@@ -169,6 +186,95 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(json.loads(output.call_args.args[0])["max_charge_level"], 80)
         with mock.patch("sys.argv", ["charge-limit-provider.py", "check"]), mock.patch.object(provider, "ChargeLimitBackend", return_value=backend), mock.patch("builtins.print"):
             self.assertEqual(provider.main(), 0)
+        self.assertEqual(self.fixture.threshold.read_text(), "80\n")
+
+    def test_behaviour_uses_actual_kernel_modes_and_bracketed_selection(self):
+        backend = self.fixture.backend()
+        before = self.fixture.behaviour.stat().st_mtime_ns
+        self.assertEqual(backend.read_behaviour(), {
+            "mode": "inhibit-charge-awake", "supported_modes": ["auto", "inhibit-charge", "inhibit-charge-awake"],
+        })
+        self.assertEqual(backend.status()["charge_behaviour"]["mode"], "inhibit-charge-awake")
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, before)
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    def test_modes_write_only_explicit_text_and_never_the_ceiling(self):
+        backend = self.fixture.backend()
+        before = self.fixture.threshold.stat().st_mtime_ns
+        for mode in ("auto", "inhibit-charge", "inhibit-charge-awake"):
+            self.assertEqual(backend.set_behaviour(mode), mode)
+            self.assertEqual(backend.read_behaviour()["mode"], mode)
+        self.assertEqual(self.fixture.behaviour_writes, ["auto\n", "inhibit-charge\n", "inhibit-charge-awake\n"])
+        self.assertEqual(self.fixture.threshold.read_text(), "80\n")
+        self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, before)
+
+    def test_ceiling_changes_never_write_bypass(self):
+        backend = self.fixture.backend()
+        before = self.fixture.behaviour.stat().st_mtime_ns
+        backend.set_limit(-1)
+        backend.set_limit(65)
+        self.assertEqual(backend.read_behaviour()["mode"], "inhibit-charge-awake")
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, before)
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    def test_unchanged_mode_and_invalid_requests_never_write(self):
+        backend = self.fixture.backend()
+        self.assertEqual(backend.set_behaviour("inhibit-charge-awake"), "inhibit-charge-awake")
+        for mode in ("", "force-discharge", "AUTO", "auto\n", "[auto]", "auto;reboot", None, 0):
+            with self.subTest(mode=mode), self.assertRaises(provider.ChargeLimitError):
+                backend.set_behaviour(mode)
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    def test_behaviour_parser_refuses_malformed_or_unknown_capabilities(self):
+        backend = self.fixture.backend()
+        for value in ("", "auto inhibit-charge", "[auto] [inhibit-charge]", "[auto] auto", "[auto] force-discharge", "[auto", "[auto]]", "[auto]\n" + "x" * 513):
+            with self.subTest(value=value):
+                self.fixture.behaviour.write_text(value)
+                with self.assertRaises(provider.ChargeLimitError):
+                    backend.read_behaviour()
+                self.assertIsNone(backend.optional_behaviour())
+                self.assertEqual(backend.read_limit(), 80)
+
+    def test_only_reported_behaviour_can_be_requested(self):
+        backend = self.fixture.backend()
+        self.fixture.behaviour.write_text("[auto]\n")
+        self.assertEqual(backend.read_behaviour(), {"mode": "auto", "supported_modes": ["auto"]})
+        with self.assertRaisesRegex(provider.ChargeLimitError, "not supported"):
+            backend.set_behaviour("inhibit-charge")
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    def test_absent_behaviour_keeps_independent_ceiling_support(self):
+        self.fixture.behaviour.unlink()
+        backend = self.fixture.backend()
+        self.assertIsNone(backend.status()["charge_behaviour"])
+        self.assertEqual(backend.read_limit(), 80)
+        with self.assertRaises(FileNotFoundError):
+            backend.set_behaviour("auto")
+        self.assertFalse(self.fixture.behaviour.exists())
+
+    def test_behaviour_symlink_and_changed_identity_are_refused(self):
+        backend = self.fixture.backend()
+        other = self.fixture.root / "unrelated"
+        other.write_text("[auto]\n")
+        self.fixture.behaviour.unlink()
+        self.fixture.behaviour.symlink_to(other)
+        with self.assertRaises(provider.ChargeLimitError):
+            backend.set_behaviour("inhibit-charge")
+        self.assertEqual(other.read_text(), "[auto]\n")
+        self.fixture.behaviour.unlink()
+        self.fixture.set_kernel_mode("inhibit-charge-awake")
+        (self.fixture.root / "sys/class/dmi/id/product_name").write_text("Other")
+        with self.assertRaises(provider.ChargeLimitError):
+            backend.set_behaviour("auto")
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    def test_behaviour_readback_mismatch_is_error_without_implicit_restore(self):
+        backend = self.fixture.backend()
+        before = backend.read_behaviour()
+        with mock.patch.object(backend, "read_behaviour", side_effect=[before, before]):
+            with self.assertRaisesRegex(provider.ChargeLimitError, "did not confirm"):
+                backend.set_behaviour("auto")
+        self.assertEqual(self.fixture.behaviour_writes, ["auto\n"])
         self.assertEqual(self.fixture.threshold.read_text(), "80\n")
 
 

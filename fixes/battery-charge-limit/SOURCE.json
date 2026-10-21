@@ -15,5 +15,13 @@
     "scope": "Exact ONEXPLAYER 3 DMI quirk only; no EC policy changes"
   },
   "tested_kernel": "7.2.9-onex3-vrr-test",
-  "hardware_validation": "Installed matching signed module and persistent provider; preserved firmware 80%, verified 75% then restored 80%, and verified the live SteamOS Manager -1-to-100% mapping before restoring 80%. Steam client reports charge support with a 50\u2013100% range. Physical charging, resume and reboot remain separate checks."
+  "hardware_validation": "Matching signed module, persistent provider and native Steam ceiling API tested. The separate bypass interface and Decky plugin are installed; live Decky reads, invalid-request rejection and an unchanged awake-mode selection passed. Upgrade retained the owner's current 100% ceiling and inhibit-charge-awake mode. Steam reports a 50\u2013100% ceiling range. Physical charging, resume and reboot remain separate checks.",
+  "decky": {
+    "name": "OXP3 Charge Controls",
+    "version": "0.1.0",
+    "api": "@decky/api 1.1.2",
+    "ui": "@decky/ui 4.7.2",
+    "interface": "org.onex3.ChargeBehaviour1",
+    "scope": "Independent explicit charge-behaviour selection; charge ceiling is read-only"
+  }
 }

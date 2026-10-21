@@ -24,6 +24,10 @@ class DeploymentTests(unittest.TestCase):
         self.modules = self.root / 'modules'
         self.module_state = self.root / 'loaded-oxpec'
         self.threshold = self.root / 'threshold'
+        self.behaviour = self.root / 'behaviour'
+        self.expose_behaviour = True
+        self.mode_after_load = None
+        self.mode_after_start = None
         self.module = self.root / 'candidate.ko'
         self.module.write_bytes(b'fixture module; never executed')
         self.override = self.modules / self.release / 'updates/oxp3-charge-limit/oxpec.ko'
@@ -43,9 +47,10 @@ class DeploymentTests(unittest.TestCase):
         self.virtual_owners = {}
         self.real_fingerprint = deploy.shared.fingerprint
         for target, value in ((deploy, 'STATE_ROOT'), (deploy, 'MODULE_ROOT'),
-                              (deploy, 'MODULE_STATE'), (deploy, 'THRESHOLD')):
+                              (deploy, 'MODULE_STATE'), (deploy, 'THRESHOLD'), (deploy, 'BEHAVIOUR')):
             replacements = {'STATE_ROOT': self.state, 'MODULE_ROOT': self.modules,
-                            'MODULE_STATE': self.module_state, 'THRESHOLD': self.threshold}
+                            'MODULE_STATE': self.module_state, 'THRESHOLD': self.threshold,
+                            'BEHAVIOUR': self.behaviour}
             mock = patch.object(target, value, replacements[value])
             mock.start()
             self.addCleanup(mock.stop)
@@ -90,7 +95,12 @@ class DeploymentTests(unittest.TestCase):
         elif args == ['/usr/bin/modprobe', 'oxpec']:
             self.module_state.mkdir(exist_ok=True)
             # Model the preexisting firmware setting becoming readable after load.
-            self.threshold.write_text('80\n')
+            if not self.threshold.exists():
+                self.threshold.write_text('80\n')
+            if self.mode_after_load is not None:
+                self.set_mode(self.mode_after_load)
+            elif self.expose_behaviour and not self.behaviour.exists():
+                self.set_mode('inhibit-charge-awake')
         if check and code:
             raise RuntimeError('unexpected fixture command failure')
         return subprocess.CompletedProcess(args, code, stdout=output, stderr='')
@@ -104,6 +114,8 @@ class DeploymentTests(unittest.TestCase):
                 self.fail_start = False
                 raise RuntimeError('injected provider-start failure')
             self.service['active'] = 'active'
+            if self.mode_after_start is not None:
+                self.set_mode(self.mode_after_start)
         elif args[0] == 'stop':
             self.service['active'] = 'inactive'
         return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
@@ -111,6 +123,9 @@ class DeploymentTests(unittest.TestCase):
     def record(self):
         import json
         return Path(json.loads((self.state / 'active.json').read_text())['state'])
+
+    def set_mode(self, mode):
+        self.behaviour.write_text(' '.join(f'[{item}]' if item == mode else item for item in ('auto', 'inhibit-charge', 'inhibit-charge-awake')) + '\n')
 
     def test_install_and_rollback_restore_module_and_local_files(self):
         self.compressed.parent.mkdir(parents=True)
@@ -120,6 +135,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.override.read_bytes(), self.module.read_bytes())
         self.assertFalse(self.compressed.exists())
         self.assertEqual(self.threshold.read_text(), '80\n')
+        self.assertEqual(deploy.read_behaviour(), 'inhibit-charge-awake')
         self.assertTrue(deploy.rollback(self.record()))
         self.assertEqual(self.conf.read_bytes(), b'original local policy')
         self.assertEqual(self.conf.stat().st_mode & 0o777, 0o640)
@@ -128,6 +144,83 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.unrelated.read_bytes(), b'unrelated TDP settings')
         self.assertEqual(self.threshold.read_text(), '80\n')
         self.assertTrue(self.module_state.exists())  # No automatic unload.
+        self.assertEqual(deploy.read_behaviour(), 'inhibit-charge-awake')
+
+    def test_preexisting_limit_and_bypass_are_preserved_and_recorded(self):
+        import json
+        self.module_state.mkdir()
+        self.threshold.write_text('100\n')
+        self.set_mode('inhibit-charge-awake')
+        before = (self.threshold.stat().st_mtime_ns, self.behaviour.stat().st_mtime_ns)
+        deploy.install('fixture-user', self.module)
+        record = self.record()
+        state = json.loads(record.read_text())
+        self.assertEqual(state['threshold_before'], 100)
+        self.assertEqual(state['threshold_after'], 100)
+        self.assertEqual(state['charge_behaviour_before'], 'inhibit-charge-awake')
+        self.assertEqual(state['charge_behaviour_after'], 'inhibit-charge-awake')
+        self.assertEqual((self.threshold.stat().st_mtime_ns, self.behaviour.stat().st_mtime_ns), before)
+        self.assertTrue(deploy.rollback(record))
+        self.assertEqual((self.threshold.stat().st_mtime_ns, self.behaviour.stat().st_mtime_ns), before)
+
+    def test_mode_change_during_modprobe_aborts_without_restoring_hardware(self):
+        self.module_state.mkdir()
+        self.threshold.write_text('80\n')
+        self.set_mode('inhibit-charge-awake')
+        self.mode_after_load = 'auto'
+        with self.assertRaisesRegex(RuntimeError, 'behaviour changed while loading'):
+            deploy.install('fixture-user', self.module)
+        self.assertEqual(deploy.read_behaviour(), 'auto')
+        self.assertEqual(self.threshold.read_text(), '80\n')
+        self.assertEqual(self.conf.read_bytes(), b'original local policy')
+        self.assertFalse(self.override.exists())
+        self.assertFalse((self.state / 'active.json').exists())
+
+    def test_mode_change_during_provider_start_aborts_without_restoring_hardware(self):
+        self.mode_after_start = 'inhibit-charge'
+        with self.assertRaisesRegex(RuntimeError, 'behaviour changed while starting'):
+            deploy.install('fixture-user', self.module)
+        self.assertEqual(deploy.read_behaviour(), 'inhibit-charge')
+        self.assertEqual(self.threshold.read_text(), '80\n')
+        self.assertEqual(self.conf.read_bytes(), b'original local policy')
+        self.assertFalse(self.override.exists())
+        self.assertFalse((self.state / 'active.json').exists())
+
+    def test_optional_missing_bypass_does_not_prevent_ceiling_installation(self):
+        import json
+        self.expose_behaviour = False
+        deploy.install('fixture-user', self.module)
+        record = self.record()
+        state = json.loads(record.read_text())
+        self.assertIsNone(state['charge_behaviour_before'])
+        self.assertIsNone(state['charge_behaviour_after'])
+        self.assertFalse(self.behaviour.exists())
+        self.assertTrue(deploy.rollback(record))
+        self.assertFalse(self.behaviour.exists())
+
+    def test_invalid_initial_bypass_is_refused_before_installation_writes(self):
+        self.behaviour.write_text('[auto] [inhibit-charge]\n')
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            deploy.install('fixture-user', self.module)
+        self.assertEqual(list(self.state.iterdir()), [])
+        self.assertFalse(self.override.exists())
+        self.assertFalse(self.module_state.exists())
+        self.assertEqual(self.conf.read_bytes(), b'original local policy')
+
+    def test_bypass_disappearance_during_provider_start_is_not_hidden(self):
+        real_control = self.control
+
+        def remove_on_start(user, *args, **kwargs):
+            result = real_control(user, *args, **kwargs)
+            if args[0] == 'start':
+                self.behaviour.unlink()
+            return result
+
+        with patch.object(deploy.shared, 'control', side_effect=remove_on_start):
+            with self.assertRaisesRegex(RuntimeError, 'behaviour changed while starting'):
+                deploy.install('fixture-user', self.module)
+        self.assertFalse(self.behaviour.exists())
+        self.assertEqual(self.threshold.read_text(), '80\n')
 
     def test_later_admin_change_is_retained_and_record_stays_active(self):
         deploy.install('fixture-user', self.module)

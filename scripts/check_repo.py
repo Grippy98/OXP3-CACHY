@@ -9,7 +9,7 @@ import sys
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP = {'.git', '__pycache__', 'build', 'dist', 'out'}
+SKIP = {'.git', '__pycache__', 'node_modules', 'build', 'dist', 'out'}
 VENDORED_DOCS = ('fixes/boot-controller/limine/', 'fixes/boot-controller/reference-headers/',
                 'fixes/oxp3-controller/inputplumber/reference-v0.81.0/')
 

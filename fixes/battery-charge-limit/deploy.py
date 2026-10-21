@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a matching oxpec module and scoped provider without changing its charge limit."""
+"""Install a matching oxpec module and provider, preserving charge limit and bypass."""
 
 import argparse
 import datetime
@@ -23,6 +23,7 @@ STATE_ROOT = Path('/var/lib/onex3-fixes/charge-limit-install')
 MODULE_ROOT = Path('/usr/lib/modules')
 MODULE_STATE = Path('/sys/module/oxpec')
 THRESHOLD = Path('/sys/class/power_supply/BAT0/charge_control_end_threshold')
+BEHAVIOUR = Path('/sys/class/power_supply/BAT0/charge_behaviour')
 DEST = Path('/usr/local/lib/onex3-fixes/battery-charge-limit/charge-limit-provider.py')
 UNIT = 'onex3-charge-limit.service'
 ROOTFS_FILES = (
@@ -62,6 +63,26 @@ def read_threshold():
     if not 0 <= value <= 100:
         raise RuntimeError(f'Unexpected charge threshold: {value}.')
     return value
+
+
+def read_behaviour():
+    """Read the optional selected kernel mode; never infer or program one."""
+    try:
+        text = BEHAVIOUR.read_text(encoding='ascii')
+    except FileNotFoundError:
+        return None
+    modes, selected = [], []
+    for token in text.split():
+        active = token.startswith('[') and token.endswith(']')
+        mode = token[1:-1] if active else token
+        if mode not in ('auto', 'inhibit-charge', 'inhibit-charge-awake') or mode in modes:
+            raise RuntimeError('Unexpected battery charge behaviour list.')
+        modes.append(mode)
+        if active:
+            selected.append(mode)
+    if len(selected) != 1:
+        raise RuntimeError('Expected exactly one selected battery charge behaviour.')
+    return selected[0]
 
 
 def payload(user, release, module_suffix, module_data):
@@ -164,7 +185,7 @@ def rollback(record):
     if not conflicts:
         (STATE_ROOT / 'active.json').unlink(missing_ok=True)
     print(f'Rollback record retained: {record}')
-    print('Charge threshold was not changed. The passive loaded oxpec module was retained; unload deliberately or reboot when appropriate.')
+    print('Rollback did not write or restore the charge threshold or charge behaviour. The passive loaded oxpec module was retained; unload deliberately or reboot when appropriate.')
     return not conflicts
 
 
@@ -175,13 +196,14 @@ def install(user, module, check=False):
     for path in files:
         shared.safe_system_parent(path)
     if check:
-        print(f'Read-only checks passed: oxpec for {vermagic}; no module loaded or threshold changed.')
+        print(f'Read-only checks passed: oxpec for {vermagic}; no module loaded, charge threshold or charge behaviour written.')
         return
     active = STATE_ROOT / 'active.json'
     if active.exists():
         raise RuntimeError('An installation is already recorded; roll it back before reinstalling.')
     loaded_before = MODULE_STATE.exists()
     threshold_before = read_threshold() if THRESHOLD.exists() else None
+    behaviour_before = read_behaviour()
     if loaded_before and threshold_before is None:
         raise RuntimeError('An existing loaded oxpec lacks charge sysfs support; resolve that module before installing.')
     previous_module = shared.run(['/usr/bin/modinfo', '-n', 'oxpec'], check=False).stdout.strip()
@@ -192,7 +214,8 @@ def install(user, module, check=False):
     record = directory / 'state.json'
     state = {'schema': 1, 'phase': 'prepared', 'session_user': user, 'kernel_release': release,
         'module_loaded_before': loaded_before, 'previous_module_path': previous_module,
-        'threshold_before': threshold_before, 'service_before': before, 'service_applied': None,
+        'threshold_before': threshold_before, 'charge_behaviour_before': behaviour_before,
+        'service_before': before, 'service_applied': None,
         'links_before': shared.enable_links(None, UNIT), 'links_applied': {},
         'created_directories': [], 'files': {}}
     for index, (path, data) in enumerate(files.items()):
@@ -225,6 +248,9 @@ def install(user, module, check=False):
         threshold_after = read_threshold()
         if threshold_before is not None and threshold_after != threshold_before:
             raise RuntimeError('Charge threshold changed during installation; retained value is not overwritten.')
+        behaviour_after = read_behaviour()
+        if behaviour_before is not None and behaviour_after != behaviour_before:
+            raise RuntimeError('Charge behaviour changed while loading the module; retained mode is not overwritten.')
         reload_managers(user)
         shared.control(None, 'enable', UNIT)
         state['service_applied'] = shared.service_state(None, UNIT)
@@ -236,8 +262,11 @@ def install(user, module, check=False):
             raise RuntimeError('Charge-limit provider did not become active.')
         if read_threshold() != threshold_after:
             raise RuntimeError('Charge threshold changed while starting the provider; retained value is not overwritten.')
+        if read_behaviour() != behaviour_after:
+            raise RuntimeError('Charge behaviour changed while starting the provider; retained mode is not overwritten.')
         state['phase'] = 'installed'
         state['threshold_after'] = threshold_after
+        state['charge_behaviour_after'] = behaviour_after
         shared.save(record, state)
     except Exception:
         state['service_applied'] = shared.service_state(None, UNIT, allow_protected=True)
@@ -246,11 +275,11 @@ def install(user, module, check=False):
         print('Installation failed; restoring recorded files and provider state.', file=sys.stderr)
         rollback(record)
         raise
-    print(f'Installed. BAT0 charge threshold remains {threshold_after}%. Baseline: {record}')
+    print(f'Installed. BAT0 charge threshold remains {threshold_after}%; charge behaviour is {behaviour_after or "unavailable"}. Baseline: {record}')
     if loaded_before:
         print('A preexisting oxpec module stayed loaded; the staged artifact takes effect on its next load.')
     print('Restart the user steamos-manager service and Steam when convenient to refresh cached hardware features.')
-    print('No Steam restart, reboot or charge-threshold write was requested by this installer.')
+    print('No Steam restart, reboot, charge-threshold write or charge-behaviour write was requested by this installer.')
 
 
 def main():

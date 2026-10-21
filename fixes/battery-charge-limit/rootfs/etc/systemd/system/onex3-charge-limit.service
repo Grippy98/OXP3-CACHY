@@ -18,6 +18,7 @@ PrivateTmp=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/sys/class/power_supply/BAT0/charge_control_end_threshold
+ReadWritePaths=-/sys/class/power_supply/BAT0/charge_behaviour
 
 [Install]
 WantedBy=multi-user.target

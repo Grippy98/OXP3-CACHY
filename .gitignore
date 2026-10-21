@@ -5,6 +5,7 @@
 /local-artifacts/
 /evidence/
 __pycache__/
+node_modules/
 *.py[cod]
 *.o
 *.a

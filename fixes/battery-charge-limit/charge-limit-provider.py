@@ -3,6 +3,8 @@
 
 Starting and stopping this provider only reads the existing firmware setting.
 Only an explicit MaxChargeLevel D-Bus property write changes the threshold.
+The separate, optional ChargeBehaviour1.Mode property controls battery bypass;
+neither setting changes the other.
 """
 
 import argparse
@@ -19,10 +21,13 @@ import sys
 BUS_NAME = "org.onex3.SteamOSManager.ChargeLimit"
 OBJECT_PATH = "/org/onex3/SteamOSManager/ChargeLimit"
 CHARGE_INTERFACE = "com.steampowered.SteamOSManager1.BatteryChargeLimit1"
+BEHAVIOUR_INTERFACE = "org.onex3.ChargeBehaviour1"
 REMOTE_INTERFACE = "com.steampowered.SteamOSManager1.RemoteInterface1"
 ERROR_NAME = "org.onex3.ChargeLimit.Error"
 MINIMUM_LIMIT = 50
 ATTRIBUTE = "charge_control_end_threshold"
+BEHAVIOUR_ATTRIBUTE = "charge_behaviour"
+ALLOWED_MODES = frozenset(("auto", "inhibit-charge-awake", "inhibit-charge"))
 ACPI_BATTERY_PATHS = (
     "sys/bus/platform/drivers/acpi-battery/PNP0C0A:00/firmware_node",
     "sys/bus/acpi/drivers/battery/PNP0C0A:00",
@@ -66,18 +71,29 @@ class ChargeLimitBackend:
             raise ChargeLimitError("The standard battery charge threshold is unavailable")
         return battery
 
-    def _threshold(self):
+    def _attribute(self, name):
+        if name not in (ATTRIBUTE, BEHAVIOUR_ATTRIBUTE):
+            raise ChargeLimitError("Unsupported battery property")
         if self._find_battery() != self.battery:
             raise ChargeLimitError("The ACPI battery changed while the provider was running")
-        return self.battery / ATTRIBUTE
+        path = self.battery / name
+        if path.is_symlink() or path.resolve(strict=True) != path or not path.is_file():
+            raise ChargeLimitError("Battery property must be the battery's own sysfs property")
+        return path
 
-    def _open_threshold(self, flags):
-        path = self._threshold()
+    def _open_attribute(self, name, flags):
+        path = self._attribute(name)
         descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC)
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             os.close(descriptor)
-            raise ChargeLimitError("Battery threshold is not a regular sysfs property")
+            raise ChargeLimitError("Battery property is not a regular sysfs property")
         return descriptor
+
+    def _open_threshold(self, flags):
+        return self._open_attribute(ATTRIBUTE, flags)
+
+    def _open_behaviour(self, flags):
+        return self._open_attribute(BEHAVIOUR_ATTRIBUTE, flags)
 
     def read_raw(self):
         with os.fdopen(self._open_threshold(os.O_RDONLY), "r", encoding="ascii") as source:
@@ -107,6 +123,48 @@ class ChargeLimitBackend:
                 raise ChargeLimitError("The battery did not confirm the requested charge threshold")
         return -1 if target == 100 else target
 
+    def read_behaviour(self):
+        with os.fdopen(self._open_behaviour(os.O_RDONLY), "r", encoding="ascii") as source:
+            text = source.read(513)
+        if len(text) > 512:
+            raise ChargeLimitError("The battery charge behaviour list is too long")
+        modes, selected = [], []
+        for token in text.split():
+            active = token.startswith("[") and token.endswith("]")
+            mode = token[1:-1] if active else token
+            if mode not in ALLOWED_MODES or mode in modes:
+                raise ChargeLimitError("The battery charge behaviour list is invalid or unsupported")
+            modes.append(mode)
+            if active:
+                selected.append(mode)
+        if len(selected) != 1:
+            raise ChargeLimitError("The battery must report exactly one active charge behaviour")
+        return {"mode": selected[0], "supported_modes": modes}
+
+    def optional_behaviour(self):
+        try:
+            return self.read_behaviour()
+        except (ChargeLimitError, OSError, ValueError):
+            # Missing bypass support must not hide the independent charge ceiling.
+            return None
+
+    def _write_behaviour(self, mode):
+        with os.fdopen(self._open_behaviour(os.O_WRONLY | os.O_TRUNC), "w", encoding="ascii") as destination:
+            destination.write(f"{mode}\n")
+
+    def set_behaviour(self, mode):
+        if type(mode) is not str or mode not in ALLOWED_MODES:
+            raise ChargeLimitError("Mode must be auto, inhibit-charge-awake or inhibit-charge")
+        before = self.read_behaviour()
+        if mode not in before["supported_modes"]:
+            raise ChargeLimitError("The requested charge behaviour is not supported by this battery")
+        if mode != before["mode"]:
+            # Independent of the charge ceiling; no threshold write or persistence.
+            self._write_behaviour(mode)
+            if self.read_behaviour()["mode"] != mode:
+                raise ChargeLimitError("The battery did not confirm the requested charge behaviour")
+        return mode
+
     def status(self):
         raw = self.read_raw()
         return {
@@ -115,6 +173,7 @@ class ChargeLimitBackend:
             "raw_threshold_percent": raw,
             "max_charge_level": -1 if raw == 100 else raw,
             "suggested_minimum_limit": MINIMUM_LIMIT,
+            "charge_behaviour": self.optional_behaviour(),
         }
 
 
@@ -127,6 +186,7 @@ async def serve(backend=None, *, bus_address=None, stop_event=None, poll_interva
 
     backend = backend if backend is not None else ChargeLimitBackend()
     last_level = backend.read_limit()
+    last_behaviour = backend.optional_behaviour()
     stop = stop_event if stop_event is not None else asyncio.Event()
     loop = asyncio.get_running_loop()
     signals = []
@@ -167,6 +227,34 @@ async def serve(backend=None, *, bus_address=None, stop_event=None, poll_interva
         def RemoteInterfaces(self) -> "as":
             return [CHARGE_INTERFACE]
 
+    class BehaviourInterface(ServiceInterface):
+        def __init__(self):
+            super().__init__(BEHAVIOUR_INTERFACE)
+
+        @dbus_property(access=PropertyAccess.READWRITE)
+        def Mode(self) -> "s":
+            try:
+                return backend.read_behaviour()["mode"]
+            except (ChargeLimitError, OSError, ValueError) as error:
+                raise DBusError(ERROR_NAME, str(error)) from error
+
+        @Mode.setter
+        def Mode(self, value: "s"):
+            nonlocal last_behaviour
+            try:
+                actual = backend.set_behaviour(value)
+                last_behaviour = backend.read_behaviour()
+            except (ChargeLimitError, OSError, ValueError) as error:
+                raise DBusError(ERROR_NAME, str(error)) from error
+            self.emit_properties_changed({"Mode": actual})
+
+        @dbus_property(access=PropertyAccess.READ)
+        def SupportedModes(self) -> "as":
+            try:
+                return backend.read_behaviour()["supported_modes"]
+            except (ChargeLimitError, OSError, ValueError) as error:
+                raise DBusError(ERROR_NAME, str(error)) from error
+
     bus = None
     owned = False
     tasks = []
@@ -175,6 +263,9 @@ async def serve(backend=None, *, bus_address=None, stop_event=None, poll_interva
         charge = ChargeInterface()
         bus.export(OBJECT_PATH, charge)
         bus.export(OBJECT_PATH, RemoteInterface())
+        behaviour = BehaviourInterface() if last_behaviour is not None else None
+        if behaviour is not None:
+            bus.export(OBJECT_PATH, behaviour)
         reply = await bus.request_name(BUS_NAME, NameFlag.DO_NOT_QUEUE)
         if reply != RequestNameReply.PRIMARY_OWNER:
             raise ChargeLimitError("Another process already owns the charge-limit provider name")
@@ -182,7 +273,7 @@ async def serve(backend=None, *, bus_address=None, stop_event=None, poll_interva
         LOG.info("Battery charge remote active; existing firmware threshold preserved")
 
         async def watch_threshold():
-            nonlocal last_level
+            nonlocal last_level, last_behaviour, behaviour
             while True:
                 await asyncio.sleep(poll_interval)
                 # Reflect changes made by KDE or firmware without writing them back.
@@ -190,6 +281,20 @@ async def serve(backend=None, *, bus_address=None, stop_event=None, poll_interva
                 if actual != last_level:
                     last_level = actual
                     charge.emit_properties_changed({"MaxChargeLevel": actual})
+                actual_behaviour = backend.optional_behaviour()
+                if actual_behaviour is None:
+                    if behaviour is not None:
+                        bus.unexport(OBJECT_PATH, behaviour)
+                        behaviour = None
+                elif behaviour is None:
+                    behaviour = BehaviourInterface()
+                    bus.export(OBJECT_PATH, behaviour)
+                elif actual_behaviour != last_behaviour:
+                    behaviour.emit_properties_changed({
+                        "Mode": actual_behaviour["mode"],
+                        "SupportedModes": actual_behaviour["supported_modes"],
+                    })
+                last_behaviour = actual_behaviour
 
         tasks = [asyncio.create_task(stop.wait()), asyncio.create_task(bus.wait_for_disconnect()), asyncio.create_task(watch_threshold())]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

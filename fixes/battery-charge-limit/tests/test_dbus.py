@@ -69,6 +69,7 @@ class DBusTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_signed_steam_abi_reset_and_passive_lifecycle(self):
         before = self.fixture.threshold.stat().st_mtime_ns
+        bypass_before = self.fixture.behaviour.stat().st_mtime_ns
         props = await self.start_server()
         self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, before)
         values = await props.call_get_all(provider.CHARGE_INTERFACE)
@@ -104,6 +105,84 @@ class DBusTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.server, 3)
         self.assertEqual(self.fixture.threshold.read_text(), "80\n")
         self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, before_stop)
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, bypass_before)
+        self.assertEqual(self.fixture.behaviour_writes, [])
+
+    async def test_behaviour_abi_is_explicit_and_independent_of_ceiling(self):
+        before = self.fixture.behaviour.stat().st_mtime_ns
+        props = await self.start_server()
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, before)
+        values = await props.call_get_all(provider.BEHAVIOUR_INTERFACE)
+        self.assertEqual({key: (value.signature, value.value) for key, value in values.items()}, {
+            "Mode": ("s", "inhibit-charge-awake"),
+            "SupportedModes": ("as", ["auto", "inhibit-charge", "inhibit-charge-awake"]),
+        })
+        properties = self.introspection.to_xml().find(f"interface[@name='{provider.BEHAVIOUR_INTERFACE}']").findall("property")
+        self.assertEqual({p.attrib["name"]: (p.attrib["type"], p.attrib["access"]) for p in properties}, {
+            "Mode": ("s", "readwrite"), "SupportedModes": ("as", "read"),
+        })
+        self.assertEqual((await props.call_get(provider.REMOTE_INTERFACE, "RemoteInterfaces")).value, [provider.CHARGE_INTERFACE])
+        await props.call_set(provider.CHARGE_INTERFACE, "MaxChargeLevel", Variant("i", -1))
+        self.assertEqual((await props.call_get(provider.BEHAVIOUR_INTERFACE, "Mode")).value, "inhibit-charge-awake")
+        self.assertEqual(self.fixture.behaviour_writes, [])
+        ceiling_before = self.fixture.threshold.stat().st_mtime_ns
+        changes = []
+        props.on_properties_changed(lambda interface, changed, invalidated: changes.append((interface, changed)))
+        for mode in ("inhibit-charge", "auto"):
+            await props.call_set(provider.BEHAVIOUR_INTERFACE, "Mode", Variant("s", mode))
+            self.assertEqual((await props.call_get(provider.BEHAVIOUR_INTERFACE, "Mode")).value, mode)
+            self.assertEqual(self.fixture.threshold.read_text(), "100\n")
+            self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, ceiling_before)
+        self.assertEqual(self.fixture.behaviour_writes, ["inhibit-charge\n", "auto\n"])
+        await asyncio.sleep(0.03)
+        self.assertTrue(any(interface == provider.BEHAVIOUR_INTERFACE and changed.get("Mode", Variant("s", "")).value == "auto" for interface, changed in changes))
+        for invalid in ("", "force-discharge", "[auto]", "auto\n", "auto;reboot"):
+            with self.subTest(invalid=invalid), self.assertRaises(DBusError) as caught:
+                await props.call_set(provider.BEHAVIOUR_INTERFACE, "Mode", Variant("s", invalid))
+            self.assertEqual(caught.exception.type, provider.ERROR_NAME)
+        with self.assertLogs(level="ERROR"), self.assertRaises(DBusError):
+            await props.call_set(provider.BEHAVIOUR_INTERFACE, "SupportedModes", Variant("as", ["auto"]))
+        bypass_before_stop = self.fixture.behaviour.stat().st_mtime_ns
+        self.stop.set()
+        await asyncio.wait_for(self.server, 3)
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, bypass_before_stop)
+        self.assertEqual(self.fixture.threshold.stat().st_mtime_ns, ceiling_before)
+        self.assertEqual(self.fixture.behaviour_writes, ["inhibit-charge\n", "auto\n"])
+
+    async def test_missing_behaviour_omits_only_optional_interface(self):
+        self.fixture.behaviour.unlink()
+        props = await self.start_server()
+        self.assertNotIn(provider.BEHAVIOUR_INTERFACE, [interface.name for interface in self.introspection.interfaces])
+        self.assertEqual((await props.call_get(provider.CHARGE_INTERFACE, "MaxChargeLevel")).value, 80)
+        self.assertEqual((await props.call_get(provider.REMOTE_INTERFACE, "RemoteInterfaces")).value, [provider.CHARGE_INTERFACE])
+        self.assertFalse(self.fixture.behaviour.exists())
+
+    async def test_external_behaviour_change_and_disappearance_preserve_ceiling(self):
+        props = await self.start_server()
+        changed = asyncio.Event()
+
+        def on_changed(interface, values, invalidated):
+            if interface == provider.BEHAVIOUR_INTERFACE and values.get("Mode", Variant("s", "")).value == "inhibit-charge":
+                changed.set()
+
+        props.on_properties_changed(on_changed)
+        self.fixture.set_kernel_mode("inhibit-charge")
+        before = self.fixture.behaviour.stat().st_mtime_ns
+        await asyncio.wait_for(changed.wait(), 2)
+        self.assertEqual(self.fixture.behaviour.stat().st_mtime_ns, before)
+        self.assertEqual(self.fixture.behaviour_writes, [])
+        self.fixture.behaviour.unlink()
+        for _ in range(100):
+            introspection = await self.client.introspect(provider.BUS_NAME, provider.OBJECT_PATH)
+            if provider.BEHAVIOUR_INTERFACE not in [interface.name for interface in introspection.interfaces]:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            self.fail("Unsupported bypass interface was not withdrawn")
+        self.assertEqual((await props.call_get(provider.CHARGE_INTERFACE, "MaxChargeLevel")).value, 80)
+        self.assertFalse(self.server.done())
+        self.assertEqual(self.fixture.threshold.read_text(), "80\n")
+        self.assertFalse(self.fixture.behaviour.exists())
 
     async def test_external_change_notified_without_background_write(self):
         props = await self.start_server()

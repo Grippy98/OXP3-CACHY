@@ -1,0 +1,10 @@
+{
+  "name": "OXP3 Charge Controls",
+  "author": "OXP3-CACHY contributors",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["Battery", "ONEXPLAYER 3"],
+    "description": "Choose charging or bypass independently from Steam's charge ceiling."
+  }
+}
