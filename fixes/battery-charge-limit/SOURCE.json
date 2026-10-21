@@ -1,0 +1,19 @@
+{
+  "driver": {
+    "project": "Linux",
+    "version": "v7.2.9",
+    "path": "drivers/platform/x86/oxpec.c",
+    "url": "https://github.com/gregkh/linux/blob/v7.2.9/drivers/platform/x86/oxpec.c",
+    "sha256": "161fa21f5bd4e332914880dff780224a17a0ee4a0c94c467069b6555885974e3",
+    "license": "GPL-2.0-or-later"
+  },
+  "patch": {
+    "commit": "493f34eacd779e6551e5405440008ea5488c22b0",
+    "url": "https://github.com/kernelorg-mirror/linux_kernel_git_pdx86_platform-drivers-x86/commit/493f34eacd779e6551e5405440008ea5488c22b0",
+    "title": "platform/x86: oxpec: Add OneXPlayer 3 quirk",
+    "author": "Antheas Kapenekakis",
+    "scope": "Exact ONEXPLAYER 3 DMI quirk only; no EC policy changes"
+  },
+  "tested_kernel": "7.2.9-onex3-vrr-test",
+  "hardware_validation": "Installed matching signed module and persistent provider; preserved firmware 80%, verified 75% then restored 80%, and verified the live SteamOS Manager -1-to-100% mapping before restoring 80%. Steam client reports charge support with a 50\u2013100% range. Physical charging, resume and reboot remain separate checks."
+}

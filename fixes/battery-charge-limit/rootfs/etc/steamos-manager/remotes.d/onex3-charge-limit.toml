@@ -1,0 +1,3 @@
+[BatteryChargeLimit1]
+bus_name = "org.onex3.SteamOSManager.ChargeLimit"
+object_path = "/org/onex3/SteamOSManager/ChargeLimit"

@@ -1,0 +1,36 @@
+From 493f34eacd779e6551e5405440008ea5488c22b0 Mon Sep 17 00:00:00 2001
+From: Antheas Kapenekakis <lkml@antheas.dev>
+Date: 2026-09-20T19:04:38Z
+Subject: [PATCH] platform/x86: oxpec: Add OneXPlayer 3 quirk
+
+The OneXPlayer 3 is a new Intel device by OneXPlayer. It uses the same
+registers as the G1 Intel edition. So, add a quirk for it. Battery
+bypass, capacity limits, fan curves, fan tachometer, and turbo button
+override were confirmed to work.
+
+Signed-off-by: Antheas Kapenekakis <lkml@antheas.dev>
+Reviewed-by: Derek J. Clark <derekjohn.clark@gmail.com>
+Link: https://patch.msgid.link/20260920190438.3444923-2-lkml@antheas.dev
+Reviewed-by: Ilpo Järvinen <ilpo.jarvinen@linux.intel.com>
+Signed-off-by: Ilpo Järvinen <ilpo.jarvinen@linux.intel.com>
+---
+ drivers/platform/x86/oxpec.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/platform/x86/oxpec.c b/drivers/platform/x86/oxpec.c
+--- a/drivers/platform/x86/oxpec.c
++++ b/drivers/platform/x86/oxpec.c
+@@ -223,6 +223,13 @@ static const struct dmi_system_id dmi_table[] = {
+ 		},
+ 		.driver_data = (void *)oxp_g1_i,
+ 	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_BOARD_VENDOR, "ONE-NETBOOK"),
++			DMI_EXACT_MATCH(DMI_BOARD_NAME, "ONEXPLAYER 3"),
++		},
++		.driver_data = (void *)oxp_g1_i,
++	},
+ 	{
+ 		.matches = {
+ 			DMI_MATCH(DMI_BOARD_VENDOR, "ONE-NETBOOK"),

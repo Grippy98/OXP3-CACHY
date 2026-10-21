@@ -5,6 +5,7 @@ Upstream files keep their existing copyright and license notices. No project-wid
 | Component | License material |
 | --- | --- |
 | Linux HID driver | [GPL-2.0](fixes/oxp3-controller/kernel/GPL-2.0), [COPYING](fixes/oxp3-controller/kernel/COPYING) |
+| Linux OXP3 EC charge control | [GPL-2.0 text](fixes/battery-charge-limit/source/GPL-2.0), GPL-2.0-or-later source notice and upstream authors in `source/oxpec.c` |
 | Community XeSS XMX integration | [Component credits and MIT notices](fixes/xess-xmx-community/CREDITS.md) |
 | Controller Tools battery patch | [GPL-3.0](fixes/controller-tools-xone-battery/LICENSE) |
 | InputPlumber | [GPL-3.0](fixes/oxp3-controller/inputplumber/LICENSE) |

@@ -13,6 +13,7 @@ Run the component suites after changing their implementations:
 
 ```sh
 python3 -m unittest discover -s fixes/xess-xmx-community/tests -p 'test_*.py'
+python3 -m unittest discover -s fixes/battery-charge-limit/tests -p 'test_*.py'
 bash fixes/boot-controller/tests/run-state-tests.sh
 bash fixes/boot-controller/tests/run-firmware-tests.sh
 bash fixes/boot-controller/tests/run-wait-tests.sh

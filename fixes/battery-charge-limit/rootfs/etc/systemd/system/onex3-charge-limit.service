@@ -1,0 +1,23 @@
+[Unit]
+Description=ONEXPLAYER 3 battery charge-limit remote for SteamOS Manager
+After=dbus.service systemd-modules-load.service
+Wants=dbus.service
+ConditionPathExists=/sys/class/power_supply/BAT0/charge_control_end_threshold
+
+[Service]
+Type=dbus
+BusName=org.onex3.SteamOSManager.ChargeLimit
+ExecStart=/usr/bin/python3 /usr/local/lib/onex3-fixes/battery-charge-limit/charge-limit-provider.py serve
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/sys/class/power_supply/BAT0/charge_control_end_threshold
+
+[Install]
+WantedBy=multi-user.target

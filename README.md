@@ -31,12 +31,13 @@ See [installation and rollback](docs/INSTALLATION.md) for prerequisites, argumen
 | [Xbox wireless battery](fixes/controller-tools-xone-battery/README.md) | Controller Tools xone discovery, coarse battery levels and notifications | Installed; one-controller display confirmed; manual build |
 | [Controller navigation in Limine](fixes/boot-controller/README.md) | Tested native gamepad patch, pinned EFI build, one-time staging and rollback | Hardware tested; build the EFI image first |
 | [Power button](fixes/power-button/README.md) | CachyOS native power-button daemon | Sleep/wake hardware tested; installer available |
+| [Battery charge limit](fixes/battery-charge-limit/README.md) | Upstream OXP3 EC quirk, matching module build and native Steam charge control | Installed at 80%; kernel and Steam API read/write/restore tested |
 | [Intel TDP and MangoHud](fixes/intel-tdp-mangohud/README.md) | RAPL backend, 8–40 W policy, narrow permissions, telemetry patch | Backend/telemetry hardware tested; MangoHud build separate |
 | [TV audio](fixes/tv-audio-profile/README.md) | Native HDMI profile and default-sink selection | Audio/reconnect hardware tested; reversible helper available |
 | [LG TV EDID recovery](fixes/lg-c5-edid/README.md) | Saved-EDID workaround and kernel recovery patch | Hardware tested workaround/patch; explicit capture required |
 | [Built-in panel refresh](fixes/internal-panel-refresh/README.md) | Lua profile, accepted zero-lead runtime and kernel patches | Full setup hardware tested; menu installs the profile only |
 | [Moonlight client](fixes/moonlight-client/README.md) | Pinned fork with Native resolution/FPS, Wi-Fi bitrate presets and optional Intel HDR/4:4:4 import | Manual build; docked detector/import tested; undock and HDR presentation unverified |
-| [Community XeSS XMX / XeFG](fixes/xess-xmx-community/README.md) | Private per-game Mesa/shim, verified compiler fetch, build helpers and launcher | Experimental; game loading and generated XMX code verified; gameplay/FG pending |
+| [Community XeSS XMX / XeFG](fixes/xess-xmx-community/README.md) | Private per-game Mesa/shim, verified compiler fetch, build helpers and launcher | Experimental; 1080p gameplay reported good; XMX/FG execution and performance attribution unmeasured |
 | [External HDMI VRR](fixes/external-display-vrr/README.md) | Opt-in Intel PCON / FreeSync prototype and build recipes | Experimental: 1080p SDR worked at 60/80 FPS; 4K VRR unresolved |
 | [HDMI-CEC](fixes/hdmi-cec/README.md) | Read-only transport probe and limitations | No usable transport on the tested adapters |
 | [Qt login recovery](fixes/cachyos-qt-login-recovery/README.md) | Package-mismatch diagnosis and recovery guide | Historical repair; no automated downgrade |
