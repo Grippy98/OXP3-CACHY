@@ -6,6 +6,7 @@ Upstream files keep their existing copyright and license notices. No project-wid
 | --- | --- |
 | Linux HID driver | [GPL-2.0](fixes/oxp3-controller/kernel/GPL-2.0), [COPYING](fixes/oxp3-controller/kernel/COPYING) |
 | Linux OXP3 EC charge control | [GPL-2.0 text](fixes/battery-charge-limit/source/GPL-2.0), GPL-2.0-or-later source notice and upstream authors in `source/oxpec.c` |
+| HueSync RGB integration | [BSD-3-Clause](fixes/rgb-decky/LICENSE); upstream notices retained in the downloaded plugin |
 | Community XeSS XMX integration | [Component credits and MIT notices](fixes/xess-xmx-community/CREDITS.md) |
 | Controller Tools battery patch | [GPL-3.0](fixes/controller-tools-xone-battery/LICENSE) |
 | InputPlumber | [GPL-3.0](fixes/oxp3-controller/inputplumber/LICENSE) |

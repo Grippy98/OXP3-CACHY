@@ -1,0 +1,15 @@
+{
+  "project": "HHHHanasak1/HueSync",
+  "upstream": "honjow/HueSync",
+  "release": "20261014",
+  "commit": "e05aa394f8e3a339b0f6e0c54e0ed23b955e7e84",
+  "url": "https://github.com/HHHHanasak1/HueSync/releases/tag/20261014",
+  "asset": "https://github.com/HHHHanasak1/HueSync/releases/download/20261014/huesync-oxp3.zip",
+  "sha256": "6164fa7bea9e605f9689b6977a13b5b5904b49780bc269b821054e98bd7481d5",
+  "license": "BSD-3-Clause",
+  "local_changes": [
+    "Require native LED interfaces for X2-class devices; prohibit direct HID fallback",
+    "Disable the upstream replacement updater and its update-version notification"
+  ],
+  "validation": "Verified original release digest and prepared archive syntax. Installed on the Intel OXP3 and reloaded only HueSync. Live Decky RPCs report the pinned version, all three zones and OXP effect modes. Existing lighting remained unchanged. Physical lighting and suspend/resume need separate confirmation."
+}

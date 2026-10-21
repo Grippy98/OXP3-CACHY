@@ -32,6 +32,7 @@ See [installation and rollback](docs/INSTALLATION.md) for prerequisites, argumen
 | [Controller navigation in Limine](fixes/boot-controller/README.md) | Tested native gamepad patch, pinned EFI build, one-time staging and rollback | Hardware tested; build the EFI image first |
 | [Power button](fixes/power-button/README.md) | CachyOS native power-button daemon | Sleep/wake hardware tested; installer available |
 | [Battery charge limit and bypass](fixes/battery-charge-limit/README.md) | Upstream OXP3 EC quirk, native Steam charge ceiling and independent Decky bypass selector | Kernel and Steam API tested; settings retained on service startup |
+| [Decky RGB controls](fixes/rgb-decky/README.md) | Pinned OXP3 HueSync fork with three zones, native-driver control and guarded updates | Installed; live three-zone detection verified |
 | [Intel TDP and MangoHud](fixes/intel-tdp-mangohud/README.md) | RAPL backend, 8–40 W policy, narrow permissions, telemetry patch | Backend/telemetry hardware tested; MangoHud build separate |
 | [TV audio](fixes/tv-audio-profile/README.md) | Native HDMI profile and default-sink selection | Audio/reconnect hardware tested; reversible helper available |
 | [LG TV EDID recovery](fixes/lg-c5-edid/README.md) | Saved-EDID workaround and kernel recovery patch | Hardware tested workaround/patch; explicit capture required |
