@@ -1,8 +1,24 @@
 diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
-index 492e5553..a043ee7a 100644
+index 492e5553..9b388e65 100644
 --- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
 +++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
-@@ -177,6 +177,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -5,6 +5,7 @@
+ #include <hudfix/Hudfix_Dx12.h>
+ 
+ #include <menu/menu_overlay_dx.h>
++#include <hooks/FG_Hooks.h>
+ #include <resource_tracking/ResTrack_dx12.h>
+ 
+ #include <magic_enum.hpp>
+@@ -166,6 +167,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+ 
+     if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
+     {
++        FGHooks::ReleaseCapturedFGSwapchain();
+         auto context = _swapChainContext;
+         _swapChainContext = nullptr;
+ 
+@@ -177,6 +179,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
          if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
          {
              _swapChainContext = context;
@@ -10,7 +26,7 @@ index 492e5553..a043ee7a 100644
          }
          else
          {
-@@ -1645,10 +1646,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+@@ -1645,10 +1648,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
      {
          State::Instance().currentFGSwapchain = nullptr;
  
@@ -20,7 +36,7 @@ index 492e5553..a043ee7a 100644
 -        _swapChainContext = nullptr;
 +        if (_swapChainContext != nullptr && !DestroySwapchainContext())
 +        {
-+            // The SDK still owns a live context; do not lose it or pretend teardown succeeded.
++            LOG_WARN("XeFG teardown deferred: SDK context remains alive");
 +            if (Config::Instance()->FGUseMutexForSwapchain.value_or_default())
 +                Mutex.unlockThis(1);
 +            return false;
@@ -28,50 +44,586 @@ index 492e5553..a043ee7a 100644
      }
  
      ReleaseObjects();
-diff --git a/OptiScaler/wrapped/wrapped_swapchain.cpp b/OptiScaler/wrapped/wrapped_swapchain.cpp
-index dc700366..7a3fec98 100644
---- a/OptiScaler/wrapped/wrapped_swapchain.cpp
-+++ b/OptiScaler/wrapped/wrapped_swapchain.cpp
-@@ -701,16 +701,39 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
-             State::Instance().currentRealSwapchain = nullptr;
+diff --git a/OptiScaler/hooks/FG_Hooks.cpp b/OptiScaler/hooks/FG_Hooks.cpp
+index a60e1bc6..a5220ac6 100644
+--- a/OptiScaler/hooks/FG_Hooks.cpp
++++ b/OptiScaler/hooks/FG_Hooks.cpp
+@@ -22,10 +22,116 @@
+ #include <imgui/ImGuiNotify.hpp>
  
-         auto fg = State::Instance().currentFG;
--        if (fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
-+        const bool isXeFg = State::Instance().activeFgOutput == FGOutput::XeFG;
-+        const bool releaseFg = fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr &&
-+                               (!isXeFg || fg->Hwnd() == _handle);
-+        const bool releaseXeFgProxyFirst = releaseFg && isXeFg;
-+        ULONG refCount = 0;
+ #include <d3d12.h>
++#include <atomic>
++#include <mutex>
+ #include <detours/detours.h>
+ 
+ #define XEFG_RESOURCE_REF_LIMIT 1
+ 
++// ReShade 6.8 publishes this pointer during its constructor, while the initial ref is alive.
++// Never upgrade the private-data pointer later: GetPrivateData does not own a COM reference.
++static const GUID kReShadeSwapchain = {0x1f445f9f, 0x9887, 0x4c4c, {0x90,0x55,0x4e,0x3b,0xad,0xaf,0xcc,0xa8}};
++static const GUID kReShadeUnwrapped = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++static std::mutex capturedFGMutex;
++static IDXGISwapChain4* capturedFGVisible = nullptr; // owns exactly one reference
++static IDXGISwapChain* capturedFGSdk = nullptr; // borrowed, kept alive by the visible proxy
++static thread_local bool releasingOwnedFG = false;
 +
-+        if (releaseXeFgProxyFirst)
++IDXGISwapChain4* FGHooks::TakeCapturedFGSwapchain(IDXGISwapChain* expectedSdkSwapchain)
++{
++    std::lock_guard lock(capturedFGMutex);
++    if (capturedFGSdk != expectedSdkSwapchain)
++        return nullptr;
++    auto visible = capturedFGVisible;
++    capturedFGVisible = nullptr;
++    capturedFGSdk = nullptr;
++    return visible; // transfer, without AddRef
++}
++
++void FGHooks::ReleaseOwnedFGSwapchain(IDXGISwapChain4* visible, IDXGISwapChain* sdkSwapchain)
++{
++    if (visible == nullptr)
++        return;
++    const bool wasReleasing = releasingOwnedFG;
++    releasingOwnedFG = true;
++    const auto refs = visible->Release(); // release only the reference this bridge owns
++    releasingOwnedFG = wasReleasing;
++    if (refs == 0)
++    {
++        auto& state = State::Instance();
++        if (state.currentFGSwapchain == sdkSwapchain)
++            state.currentFGSwapchain = nullptr;
++        if (state.currentSwapchain == sdkSwapchain)
++            state.currentSwapchain = nullptr;
++    }
++}
++
++void FGHooks::ReleaseCapturedFGSwapchain()
++{
++    IDXGISwapChain4* visible = nullptr;
++    IDXGISwapChain* sdk = nullptr;
++    {
++        std::lock_guard lock(capturedFGMutex);
++        visible = capturedFGVisible;
++        sdk = capturedFGSdk;
++        capturedFGVisible = nullptr; // clear before Release can re-enter hooks
++        capturedFGSdk = nullptr;
++    }
++    ReleaseOwnedFGSwapchain(visible, sdk);
++}
++
++HRESULT FGHooks::hkFGSetPrivateData(IDXGIObject* This, REFGUID Name, UINT DataSize, const void* pData)
++{
++    const auto result = o_FGSetPrivateData(This, Name, DataSize, pData);
++    auto& state = State::Instance();
++    if (FAILED(result) || state.activeFgOutput != FGOutput::XeFG || state.activeFgInput != FGInput::FSRFG ||
++        This != static_cast<IDXGIObject*>(state.currentFGSwapchain) || Name != kReShadeSwapchain ||
++        DataSize != sizeof(void*) || pData == nullptr ||
++        _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") != 0)
++        return result;
++
++    HMODULE caller = nullptr;
++    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                           reinterpret_cast<LPCWSTR>(_ReturnAddress()), &caller) ||
++        GetProcAddress(caller, "ReShadeVersion") == nullptr)
++        return result;
++
++    IDXGISwapChain4* candidate = nullptr;
++    IUnknown* published = nullptr;
++    memcpy(&published, pData, sizeof(published));
++    // The constructor's initial reference makes this QI safe; no weak-pointer upgrade occurs.
++    if (published == nullptr || FAILED(published->QueryInterface(IID_PPV_ARGS(&candidate))))
++        return result;
++    IUnknown* inner = nullptr;
++    IUnknown* innerIdentity = nullptr;
++    IUnknown* sdkIdentity = nullptr;
++    const bool matches = SUCCEEDED(candidate->QueryInterface(kReShadeUnwrapped, (void**)&inner)) && inner != nullptr &&
++        SUCCEEDED(inner->QueryInterface(IID_PPV_ARGS(&innerIdentity))) &&
++        SUCCEEDED(This->QueryInterface(IID_PPV_ARGS(&sdkIdentity))) && innerIdentity == sdkIdentity;
++    if (innerIdentity != nullptr) innerIdentity->Release();
++    if (sdkIdentity != nullptr) sdkIdentity->Release();
++    if (inner != nullptr) inner->Release();
++    if (!matches)
++    {
++        candidate->Release();
++        LOG_WARN("GTA outer capture rejected: ReShade unwrap does not match current XeFG proxy");
++        return result;
++    }
++    bool captured = false;
++    {
++        std::lock_guard lock(capturedFGMutex);
++        if (capturedFGVisible == nullptr)
++        {
++            capturedFGVisible = candidate;
++            capturedFGSdk = state.currentFGSwapchain;
++            captured = true;
++        }
++    }
++    if (!captured) candidate->Release();
++    else LOG_INFO("GTA captured owned ReShade outer {:X} for XeFG proxy {:X}", (size_t) candidate, (size_t) This);
++    return result;
++}
++
+ static ID3D12Fence* resizeFence = nullptr;
+ static UINT64 resizeFenceValue = 0;
+ static HANDLE resizeFenceEvent = nullptr;
+@@ -352,6 +458,9 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+     if (pSwapChain == nullptr)
+         return;
+ 
++    if (State::Instance().currentFGSwapchain != nullptr && State::Instance().currentFGSwapchain != pSwapChain)
++        ReleaseCapturedFGSwapchain();
++
+     _hwnd = hWnd;
+ 
+     if (_dx12InteropPresentSC == pSwapChain)
+@@ -401,6 +510,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+     void** pFactoryVTable = *reinterpret_cast<void***>(pSwapChain);
+ 
+     o_FGRelease = (PFN_Release) pFactoryVTable[2];
++    o_FGSetPrivateData = (PFN_SetPrivateData) pFactoryVTable[3];
+     o_FGSCPresent = (PFN_Present) pFactoryVTable[8];
+     o_FGSCSetFullscreenState = (PFN_SetFullscreenState) pFactoryVTable[10];
+     o_FGSCGetFullscreenState = (PFN_GetFullscreenState) pFactoryVTable[11];
+@@ -429,6 +539,8 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+         DetourUpdateThread(GetCurrentThread());
+ 
+         DetourAttach(&(PVOID&) o_FGRelease, hkFGRelease);
++        if (o_FGSetPrivateData != nullptr)
++            DetourAttach(&(PVOID&) o_FGSetPrivateData, hkFGSetPrivateData);
+         DetourAttach(&(PVOID&) o_FGSCPresent, hkFGPresent);
+         DetourAttach(&(PVOID&) o_FGSCResizeTarget, hkResizeTarget);
+         DetourAttach(&(PVOID&) o_FGSCResizeBuffers, hkResizeBuffers);
+@@ -462,6 +574,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
          {
-             fg->Deactivate();
--            fg->ReleaseSwapchain(_handle);
-+            // The XeFG context can only be destroyed after our owned proxy reference is released.
-+            // Clear the borrowed hook alias first so Release cannot recursively tear down this wrapper.
-+            State::Instance().currentFGSwapchain = nullptr;
-+            refCount = _real->Release();
-+            _real = nullptr;
-+        }
+             LOG_ERROR("Failed to attach detour: {:X}", detourResult);
+             o_FGRelease = nullptr;
++            o_FGSetPrivateData = nullptr;
+             o_FGSCPresent = nullptr;
+             o_FGSCSetFullscreenState = nullptr;
+             o_FGSCGetFullscreenState = nullptr;
+@@ -1367,11 +1480,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
+     {
+         xefg_swapchain_present_status_t status {};
+ 
+-        if (XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) xefgContext, &status) ==
+-            XEFG_SWAPCHAIN_RESULT_SUCCESS)
+-        {
++        const auto statusResult = XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) xefgContext, &status);
++        // Bounded diagnostic of the existing query; no extra SDK calls or rendering changes.
++        static std::atomic_uint statusLogCount {0};
++        if (status.isFrameGenEnabled && statusLogCount.fetch_add(1, std::memory_order_relaxed) < 16)
++            LOG_DEBUG("XeFG present status: api={}, framesPresented={}, frameGenResult={}, isFrameGenEnabled={}",
++                      (UINT) statusResult, status.framesPresented, (UINT) status.frameGenResult, status.isFrameGenEnabled);
++        if (statusResult == XEFG_SWAPCHAIN_RESULT_SUCCESS)
+             InputCommon::xefg_present_status(xefgFrameId, status.framesPresented);
+-        }
+     }
+ 
+     if (result == S_OK)
+@@ -1456,7 +1572,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
+ 
+     static bool skipReleaseChecks = false;
+ 
+-    if (skipReleaseChecks || State::Instance().currentFGSwapchain != This || State::Instance().isShuttingDown)
++    if (releasingOwnedFG || skipReleaseChecks || State::Instance().currentFGSwapchain != This || State::Instance().isShuttingDown)
+         return o_FGRelease(This);
+ 
+     This->AddRef();
+diff --git a/OptiScaler/hooks/FG_Hooks.h b/OptiScaler/hooks/FG_Hooks.h
+index 6da5b766..2e263234 100644
+--- a/OptiScaler/hooks/FG_Hooks.h
++++ b/OptiScaler/hooks/FG_Hooks.h
+@@ -24,6 +24,11 @@ class FGHooks
+     static void ClearDx12InteropPresentSC(IUnknown* pSwapChain);
+     static bool IsDx12InteropPresentSC(IUnknown* pSwapChain);
+ 
++    // Diagnostic ownership bridge: a constructor-time reference to ReShade's API-visible outer proxy.
++    static IDXGISwapChain4* TakeCapturedFGSwapchain(IDXGISwapChain* expectedSdkSwapchain);
++    static void ReleaseCapturedFGSwapchain();
++    static void ReleaseOwnedFGSwapchain(IDXGISwapChain4* visible, IDXGISwapChain* sdkSwapchain);
 +
-+        if (releaseFg)
-+        {
-+            if (!releaseXeFgProxyFirst)
-+                fg->Deactivate();
+   private:
+     using PFN_Present = rewrite_signature<decltype(&IDXGISwapChain::Present)>::type;
+     using PFN_Present1 = rewrite_signature<decltype(&IDXGISwapChain1::Present1)>::type;
+@@ -35,6 +40,7 @@ class FGHooks
+     using PFN_ResizeTarget = rewrite_signature<decltype(&IDXGISwapChain::ResizeTarget)>::type;
+     using PFN_GetFrameLatencyWaitableObject =
+         rewrite_signature<decltype(&IDXGISwapChain2::GetFrameLatencyWaitableObject)>::type;
++    using PFN_SetPrivateData = rewrite_signature<decltype(&IDXGIObject::SetPrivateData)>::type;
+     using PFN_Release = rewrite_signature<decltype(&IUnknown::Release)>::type;
+ 
+     inline static PFN_ResizeBuffers o_FGSCResizeBuffers = nullptr;
+@@ -45,6 +51,7 @@ class FGHooks
+     inline static PFN_GetFullscreenDesc o_FGSCGetFullscreenDesc = nullptr;
+     inline static PFN_Present o_FGSCPresent = nullptr;
+     inline static PFN_Present1 o_FGSCPresent1 = nullptr;
++    inline static PFN_SetPrivateData o_FGSetPrivateData = nullptr;
+     inline static PFN_Release o_FGRelease = nullptr;
+     inline static PFN_GetFrameLatencyWaitableObject o_FGSCGetFrameLatencyWaitableObject = nullptr;
+     inline static HWND _hwnd = nullptr;
+@@ -70,6 +77,7 @@ class FGHooks
+                                     DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask,
+                                     IUnknown* const* ppPresentQueue);
+     static ULONG hkFGRelease(IUnknown* This);
++    static HRESULT hkFGSetPrivateData(IDXGIObject* This, REFGUID Name, UINT DataSize, const void* pData);
+ 
+     static HRESULT hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags);
+     static HRESULT hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Flags,
+@@ -89,4 +97,5 @@ class FGHooks
+     VALIDATE_MEMBER_HOOK(hkResizeTarget, PFN_ResizeTarget)
+     VALIDATE_MEMBER_HOOK(hkGetFrameLatencyWaitableObject, PFN_GetFrameLatencyWaitableObject)
+     VALIDATE_MEMBER_HOOK(hkFGRelease, PFN_Release)
++    VALIDATE_MEMBER_HOOK(hkFGSetPrivateData, PFN_SetPrivateData)
+ };
+diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
+index b303eebd..2ec4ebfe 100644
+--- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
++++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
+@@ -4,6 +4,11 @@
+ 
+ #include <Util.h>
+ #include <Config.h>
++#include <hooks/FG_Hooks.h>
++#include <wrl/client.h>
++#include <memory>
++#include <mutex>
++#include <unordered_map>
+ #include <misc/DeferredRelease.h>
+ 
+ #include <magic_enum.hpp>
+@@ -64,6 +69,172 @@ struct ffxDispatchDescFrameGenerationPrepareV2
+     float cameraForward[3];  ///< The camera forward normalized vector in world space
+ };
+ 
++namespace
++{
++using Microsoft::WRL::ComPtr;
++const GUID kReShadeUnwrappedQueue = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++const GUID kStreamlineUnwrappedQueue = {0xadec44e2, 0x61f0, 0x45c3, {0xad,0x9f,0x1b,0x37,0x37,0x92,0x84,0xff}};
 +
-+            if (!fg->ReleaseSwapchain(_handle))
-+                LOG_WARN("FG swapchain teardown deferred; context remains alive");
- 
-             if (State::Instance().currentFGSwapchain != nullptr)
-                 State::Instance().currentFGSwapchain = nullptr;
-         }
- 
--        auto refCount = _real->Release();
-+        if (_real != nullptr)
++struct OwnedFfxSwapchain
++{
++    IDXGISwapChain4* visible = nullptr; // exactly one context-owned reference
++    IDXGISwapChain* sdk = nullptr; // borrowed identity kept alive by visible
++    void* sdkContext = nullptr;
++    ~OwnedFfxSwapchain() { FGHooks::ReleaseOwnedFGSwapchain(visible, sdk); }
++};
++std::mutex ownedFfxMutex;
++std::unordered_map<ffxContext, std::shared_ptr<OwnedFfxSwapchain>> ownedFfxSwapchains;
++
++std::shared_ptr<OwnedFfxSwapchain> FindOwnedFfx(ffxContext* context)
++{
++    if (context == nullptr || *context == nullptr) return {};
++    std::lock_guard lock(ownedFfxMutex);
++    const auto it = ownedFfxSwapchains.find(*context);
++    return it == ownedFfxSwapchains.end() ? nullptr : it->second;
++}
++
++ComPtr<IUnknown> CanonicalQueue(IUnknown* object)
++{
++    ComPtr<IUnknown> current = object;
++    // QI owns each temporary; support both current ReShade and Streamline proxies.
++    for (unsigned depth = 0; current != nullptr && depth < 8; ++depth)
++    {
++        ComPtr<IUnknown> next;
++        if (FAILED(current->QueryInterface(kReShadeUnwrappedQueue, (void**)next.GetAddressOf())) || next == nullptr)
 +        {
-+            refCount = _real->Release();
-+            _real = nullptr;
++            next.Reset();
++            current->QueryInterface(kStreamlineUnwrappedQueue, (void**)next.GetAddressOf());
 +        }
++        if (next == nullptr) break;
++        ComPtr<IUnknown> a, b;
++        current.As(&a);
++        next.As(&b);
++        if (a.Get() == b.Get()) break;
++        current = std::move(next);
++        if (depth == 7) return {}; // malformed/deep proxy chain: fail closed
++    }
++    ComPtr<IUnknown> identity;
++    if (current != nullptr) current.As(&identity);
++    return identity;
++}
++
++bool SameRatio(const DXGI_RATIONAL& a, const DXGI_RATIONAL& b)
++{
++    if (a.Numerator == 0 || b.Numerator == 0) return a.Numerator == b.Numerator;
++    return a.Denominator != 0 && b.Denominator != 0 &&
++        uint64_t(a.Numerator) * b.Denominator == uint64_t(b.Numerator) * a.Denominator;
++}
++
++bool SameVisibleDesc(const DXGI_SWAP_CHAIN_DESC1& requested, const DXGI_SWAP_CHAIN_DESC1& actual, HWND hwnd)
++{
++    UINT width = requested.Width, height = requested.Height;
++    if (width == 0 || height == 0)
++    {
++        RECT client {};
++        if (!GetClientRect(hwnd, &client) || client.right <= client.left || client.bottom <= client.top) return false;
++        if (width == 0) width = client.right - client.left;
++        if (height == 0) height = client.bottom - client.top;
++    }
++    const bool same = width == actual.Width && height == actual.Height && requested.Format == actual.Format &&
++        requested.Stereo == actual.Stereo && requested.SampleDesc.Count == actual.SampleDesc.Count &&
++        requested.SampleDesc.Quality == actual.SampleDesc.Quality && requested.BufferUsage == actual.BufferUsage &&
++        requested.BufferCount == actual.BufferCount && requested.Scaling == actual.Scaling &&
++        requested.SwapEffect == actual.SwapEffect && requested.AlphaMode == actual.AlphaMode && requested.Flags == actual.Flags;
++    if (!same)
++        LOG_WARN("GTA adoption descriptor mismatch req={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}; visible={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}",
++            width, height, (UINT)requested.Format, requested.Stereo, requested.SampleDesc.Count, requested.SampleDesc.Quality,
++            requested.BufferUsage, requested.BufferCount, (UINT)requested.Scaling, (UINT)requested.SwapEffect, (UINT)requested.AlphaMode, requested.Flags,
++            actual.Width, actual.Height, (UINT)actual.Format, actual.Stereo, actual.SampleDesc.Count, actual.SampleDesc.Quality,
++            actual.BufferUsage, actual.BufferCount, (UINT)actual.Scaling, (UINT)actual.SwapEffect, (UINT)actual.AlphaMode, actual.Flags);
++    return same;
++}
++
++ffxReturnCode_t TryAdoptGtaSwapchain(ffxContext* context, ffxCreateContextDescHeader* header,
++    IDXGISwapChain4** output, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& requested,
++    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen, ID3D12CommandQueue* queue)
++{
++    auto& state = State::Instance();
++    auto fg = state.currentFG;
++    if (state.activeFgOutput != FGOutput::XeFG || state.activeFgInput != FGInput::FSRFG ||
++        _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") != 0 ||
++        fg == nullptr || state.currentFGSwapchain == nullptr || fg->Hwnd() != hwnd)
++        return PASSTHRU_RETURN_CODE;
++
++    auto reject = [](const char* reason)
++    {
++        LOG_ERROR("GTA FFX swapchain adoption rejected: {}; existing chain left intact", reason);
++        return FFX_API_RETURN_ERROR_PARAMETER;
++    };
++    if (context == nullptr || output == nullptr || queue == nullptr || fg->SwapchainContext() == nullptr)
++        return reject("invalid output, queue, or SDK context");
++    // Only the known ABI-version extension is meaningful to this emulated provider.
++    unsigned nextCount = 0;
++    for (auto next = header->pNext; next != nullptr; next = next->pNext)
++    {
++        struct VersionDesc { ffxCreateContextDescHeader header; uint32_t version; };
++        if (++nextCount > 8 || next->type != 0x3000B)
++            return reject("unsupported create extension");
++        const auto version = reinterpret_cast<VersionDesc*>(next)->version;
++        if (!((version >= ((3u << 22) | (1u << 12) | 5u) && version <= ((3u << 22) | (1u << 12) | 7u)) ||
++              version == (4u << 22)))
++            return reject("unsupported swapchain ABI version");
++    }
++    auto requestedQueue = CanonicalQueue(queue);
++    auto existingQueue = CanonicalQueue(fg->GetCommandQueue());
++    if (requestedQueue == nullptr || existingQueue == nullptr || requestedQueue.Get() != existingQueue.Get())
++        return reject("command queue identity differs");
++
++    const auto sdk = state.currentFGSwapchain;
++    auto lease = std::make_shared<OwnedFfxSwapchain>();
++    lease->visible = FGHooks::TakeCapturedFGSwapchain(sdk);
++    lease->sdk = sdk;
++    lease->sdkContext = fg->SwapchainContext();
++    if (lease->visible == nullptr) return reject("no constructor-owned ReShade outer reference");
++    HWND visibleHwnd = nullptr;
++    DXGI_SWAP_CHAIN_DESC1 actual {};
++    DXGI_SWAP_CHAIN_DESC original {};
++    if (FAILED(lease->visible->GetHwnd(&visibleHwnd)) || visibleHwnd != hwnd ||
++        FAILED(lease->visible->GetDesc1(&actual)) || FAILED(lease->visible->GetDesc(&original)))
++        return reject("unable to query API-visible descriptor");
++    // ReShade preserves the application's descriptor before RenoDX upgrades its native HDR format.
++    if (!SameVisibleDesc(requested, actual, hwnd)) return reject("API-visible descriptors differ");
++    const bool wantsWindowed = fullscreen == nullptr || fullscreen->Windowed;
++    if (bool(original.Windowed) != wantsWindowed) return reject("fullscreen/windowed mode differs");
++    if (!wantsWindowed)
++    {
++        DXGI_SWAP_CHAIN_FULLSCREEN_DESC actualFullscreen {};
++        if (FAILED(lease->visible->GetFullscreenDesc(&actualFullscreen)) ||
++            !SameRatio(fullscreen->RefreshRate, actualFullscreen.RefreshRate) ||
++            fullscreen->ScanlineOrdering != actualFullscreen.ScanlineOrdering ||
++            fullscreen->Scaling != actualFullscreen.Scaling)
++            return reject("fullscreen timing differs");
++    }
++    if (state.currentFGSwapchain != sdk || fg->SwapchainContext() != lease->sdkContext)
++        return reject("SDK context changed during validation");
++    // NEW/FOR_HWND own no old caller reference. Return one new caller reference and
++    // keep the constructor capture as a separate context-owned lease, like native FFX.
++    lease->visible->AddRef();
++    *output = lease->visible;
++    *context = reinterpret_cast<ffxContext>(lease.get());
++    {
++        std::lock_guard lock(ownedFfxMutex);
++        ownedFfxSwapchains.emplace(*context, lease);
++    }
++    LOG_INFO("GTA FFX adopted API-visible ReShade outer {:X}, SDK {:X}, context {:X}; no recreation or caller Release",
++             (size_t)*output, (size_t)sdk, (size_t)*context);
++    return FFX_API_RETURN_OK;
++}
++} // namespace
++
++bool ffxIsOwnedSwapchainContext_Dx12FG(ffxContext* context) { return FindOwnedFfx(context) != nullptr; }
++bool ffxOwnedSwapchainContextIsCurrent_Dx12FG(ffxContext* context)
++{
++    const auto lease = FindOwnedFfx(context);
++    const auto& state = State::Instance();
++    return lease != nullptr && state.currentFG != nullptr && state.activeFgOutput == FGOutput::XeFG &&
++        state.currentFGSwapchain == lease->sdk && state.currentFG->SwapchainContext() == lease->sdkContext;
++}
++
+ static ID3D12Device* _device = nullptr;
+ static FG_Constants _fgConst {};
  
-         // Disabled for now, cause issues with some games
-         /*
+@@ -339,6 +510,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+     {
+         auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainNewDX12*) desc;
+ 
++        if (cDesc->desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        DXGI_SWAP_CHAIN_DESC1 adoptDesc {};
++        adoptDesc.Width = cDesc->desc->BufferDesc.Width;
++        adoptDesc.Height = cDesc->desc->BufferDesc.Height;
++        adoptDesc.Format = cDesc->desc->BufferDesc.Format;
++        adoptDesc.SampleDesc = cDesc->desc->SampleDesc;
++        adoptDesc.BufferUsage = cDesc->desc->BufferUsage;
++        adoptDesc.BufferCount = cDesc->desc->BufferCount;
++        adoptDesc.Scaling = cDesc->desc->BufferDesc.Scaling == DXGI_MODE_SCALING_CENTERED ?
++            DXGI_SCALING_ASPECT_RATIO_STRETCH : DXGI_SCALING_STRETCH;
++        adoptDesc.SwapEffect = cDesc->desc->SwapEffect;
++        adoptDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
++        adoptDesc.Flags = cDesc->desc->Flags;
++        DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen {};
++        fullscreen.RefreshRate = cDesc->desc->BufferDesc.RefreshRate;
++        fullscreen.ScanlineOrdering = cDesc->desc->BufferDesc.ScanlineOrdering;
++        fullscreen.Scaling = cDesc->desc->BufferDesc.Scaling;
++        fullscreen.Windowed = cDesc->desc->Windowed;
++        const auto adopted = TryAdoptGtaSwapchain(context, desc, cDesc->swapchain,
++            cDesc->desc->OutputWindow, adoptDesc, &fullscreen, cDesc->gameQueue);
++        if (adopted != PASSTHRU_RETURN_CODE) return adopted;
++
+         if (State::Instance().currentWrappedSwapchain != nullptr &&
+             State::Instance().currentSwapchainDesc.OutputWindow == cDesc->desc->OutputWindow)
+         {
+@@ -381,6 +574,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+     {
+         auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*) desc;
+ 
++        if (cDesc->desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        const auto adopted = TryAdoptGtaSwapchain(context, desc, cDesc->swapchain,
++            cDesc->hwnd, *cDesc->desc, cDesc->fullscreenDesc, cDesc->gameQueue);
++        if (adopted != PASSTHRU_RETURN_CODE) return adopted;
++
+         IDXGIFactory2* factory = nullptr;
+         auto scResult = cDesc->dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
+ 
+@@ -439,6 +637,25 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+ 
+     LOG_DEBUG("");
+ 
++    std::shared_ptr<OwnedFfxSwapchain> owned;
++    if (context != nullptr)
++    {
++        std::lock_guard lock(ownedFfxMutex);
++        const auto it = ownedFfxSwapchains.find(*context);
++        if (it != ownedFfxSwapchains.end())
++        {
++            owned = std::move(it->second);
++            ownedFfxSwapchains.erase(it);
++            *context = nullptr;
++        }
++    }
++    if (owned != nullptr)
++    {
++        LOG_INFO("GTA destroying owned FFX swapchain lease {:X}; preserving SDK context", (size_t)owned.get());
++        owned.reset(); // release exactly the context-owned outer reference, outside registry lock
++        return FFX_API_RETURN_OK;
++    }
++
+     if (State::Instance().currentFG != nullptr && (void*) scContext == *context)
+     {
+         LOG_INFO("Destroying Swapchain Context: {:X}", (size_t) State::Instance().currentFG);
+diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
+index 98259afa..41a717bf 100644
+--- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
++++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
+@@ -14,3 +14,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+ ffxReturnCode_t ffxQuery_Dx12FG(ffxContext* context, ffxQueryDescHeader* desc);
+ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* desc);
+ void ffxPresentCallback();
++
++// Owned diagnostic contexts are recognized before any native-provider fallback.
++bool ffxIsOwnedSwapchainContext_Dx12FG(ffxContext* context);
++bool ffxOwnedSwapchainContextIsCurrent_Dx12FG(ffxContext* context);
+diff --git a/OptiScaler/inputs/FfxApi_Dx12.cpp b/OptiScaler/inputs/FfxApi_Dx12.cpp
+index cff0d085..4c966472 100644
+--- a/OptiScaler/inputs/FfxApi_Dx12.cpp
++++ b/OptiScaler/inputs/FfxApi_Dx12.cpp
+@@ -307,7 +307,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12(ffxContext* context, const ffxAllocationC
+ 
+     LOG_DEBUG("context: {:X}", (size_t) *context);
+ 
+-    if (*context == (void*) scContext || *context == (void*) fgContext)
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context) || *context == (void*) scContext || *context == (void*) fgContext)
+     {
+         auto result = ffxDestroyContext_Dx12FG(context, memCb);
+ 
+@@ -359,6 +359,23 @@ ffxReturnCode_t ffxDestroyContext_Dx12(ffxContext* context, const ffxAllocationC
+ 
+ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxConfigure_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain configure rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     if (desc == nullptr)
+         return FFX_API_RETURN_ERROR_PARAMETER;
+ 
+@@ -398,6 +415,23 @@ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* d
+ 
+ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxQuery_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain query rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     LOG_DEBUG("");
+ 
+     if (desc == nullptr)
+@@ -562,6 +596,23 @@ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
+ 
+ ffxReturnCode_t ffxDispatch_Dx12(ffxContext* context, ffxDispatchDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxDispatch_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain dispatch rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     if (desc == nullptr || context == nullptr)
+         return FFX_API_RETURN_ERROR_PARAMETER;
+ 

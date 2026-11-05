@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/daniel-h-0/OptiScaler",
   "commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
-  "patch_sha256": "ae9e0ad6bac6a8c7ada8cd5dfb73c71a78de48930025ee988bbfcbe8d5ee08ad",
-  "status": "Experimental lifetime-order diagnostic; not runtime-qualified. Forced external-reference release loops remain upstream behavior and are not fixed by this patch."
+  "patch_sha256": "2c0b5f3b001b6fbc9d4a9e4a092395375ddcac46cf8522944716cad55a7056ec",
+  "status": "Experimental GTA-only ReShade outer ownership/FFX lease diagnostic. Not built or runtime-qualified. Other upstream forced-release paths remain outside the adopted-context branch."
 }
