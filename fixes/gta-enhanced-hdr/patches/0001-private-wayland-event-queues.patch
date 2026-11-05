@@ -1,0 +1,353 @@
+--- a/layer/VkLayer_FROG_gamescope_wsi.cpp
++++ b/layer/VkLayer_FROG_gamescope_wsi.cpp
+@@ -15,6 +15,9 @@
+ #include <functional>
+ #include <unordered_map>
+ #include <optional>
++#include <atomic>
++#include <cerrno>
++#include <memory>
+ 
+ #include <poll.h>
+ // For limiter file.
+@@ -44,42 +47,39 @@
+     return std::ranges::any_of(vec, std::bind_front(std::equal_to{}, lookupValue));
+   }
+ 
+-  static int waylandPumpEvents(wl_display *display) {
+-    int wlFd = wl_display_get_fd(display);
+-
+-    while (true) {
+-      int ret = 0;
+-
+-      if ((ret = wl_display_dispatch_pending(display)) < 0)
++  // Keep callbacks on their owner's queue. In particular, a timing query for
++  // one swapchain must not dispatch another swapchain's teardown callbacks.
++  // Backported from upstream 92363db / 330b8c1 to the 3.16.25 vkroots API.
++  static int waylandPumpEvents(wl_display *display, wl_event_queue *queue, wl_event_queue *globalsQueue) {
++    const int wlFd = wl_display_get_fd(display);
++    for (;;) {
++      if (wl_display_dispatch_queue_pending(display, globalsQueue) < 0)
++        return -1;
++      if (wl_display_dispatch_queue_pending(display, queue) < 0)
++        return -1;
++      if (wl_display_prepare_read_queue(display, queue) < 0) {
++        if (errno == EAGAIN || errno == EINTR)
++          continue;
++        return -1;
++      }
++      pollfd fd = { .fd = wlFd, .events = POLLIN };
++      timespec zeroTimeout = {};
++      int ret = ppoll(&fd, 1, &zeroTimeout, nullptr);
++      if (ret <= 0) {
++        const int error = errno;
++        wl_display_cancel_read(display);
++        if (ret < 0 && error == EINTR)
++          continue;
++        if (ret == 0) {
++          ret = wl_display_flush(display);
++          if (ret < 0 && errno == EAGAIN)
++            return 0;
++        }
+         return ret;
+-
+-      if ((ret = wl_display_prepare_read(display)) < 0) {
+-        if (errno == EAGAIN)
+-          continue;
+-
++      }
++      if (wl_display_read_events(display) < 0)
+         return -1;
+-      }
+-
+-      pollfd pollfd = {
+-        .fd = wlFd,
+-        .events = POLLIN,
+-      };
+-      timespec zeroTimeout = {};
+-      ret = ppoll(&pollfd, 1, &zeroTimeout, NULL);
+-
+-      if (ret <= 0) {
+-        wl_display_cancel_read(display);
+-        if (ret == 0)
+-          wl_display_flush(display);
+-        return ret;
+-      }
+-
+-      ret = wl_display_read_events(display);
+-      if (ret < 0)
+-        return ret;
+-
+-      ret = wl_display_flush(display);
+-      return ret;
++      // Dispatch the events just read before reporting that the pump is idle.
+     }
+   }
+ 
+@@ -353,20 +353,32 @@
+   }
+ 
+   struct GamescopeWaylandObjects {
+-    wl_compositor* compositor;
+-    gamescope_swapchain_factory_v2* gamescopeSwapchainFactory;
++    // Reverse destruction order releases bound proxies before their queue.
++    std::unique_ptr<wl_event_queue, decltype(&wl_event_queue_destroy)> queue{nullptr, wl_event_queue_destroy};
++    std::unique_ptr<wl_compositor, decltype(&wl_compositor_destroy)> compositor{nullptr, wl_compositor_destroy};
++    std::unique_ptr<gamescope_swapchain_factory_v2, decltype(&gamescope_swapchain_factory_v2_destroy)>
++      gamescopeSwapchainFactory{nullptr, gamescope_swapchain_factory_v2_destroy};
+ 
+     static GamescopeWaylandObjects get(wl_display *display) {
+-      wl_registry *registry = wl_display_get_registry(display);
++      GamescopeWaylandObjects waylandObjects{};
++      waylandObjects.queue.reset(wl_display_create_queue(display));
++      if (!waylandObjects.queue)
++        return {};
++      auto *wrapper = static_cast<wl_display *>(wl_proxy_create_wrapper(display));
++      if (!wrapper)
++        return {};
++      wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(wrapper), waylandObjects.queue.get());
++      wl_registry *registry = wl_display_get_registry(wrapper);
++      wl_proxy_wrapper_destroy(wrapper);
+       if (!registry)
+         return {};
+-      GamescopeWaylandObjects waylandObjects{};
+       wl_registry_add_listener(registry, &s_registryListener, reinterpret_cast<void *>(&waylandObjects));
+-      // Dispatch then roundtrip to get registry info.
+-      wl_display_dispatch(display);
+-      wl_display_roundtrip(display);
++      // A roundtrip alone requests and dispatches all preceding registry events.
++      // Do not block on the shared default queue before submitting the sync.
++      const int result = wl_display_roundtrip_queue(display, waylandObjects.queue.get());
+       wl_registry_destroy(registry);
+-
++      if (result < 0)
++        return {};
+       return waylandObjects;
+     }
+ 
+@@ -380,11 +392,11 @@
+       auto objects = reinterpret_cast<GamescopeWaylandObjects *>(data);
+ 
+       if (interface == "wl_compositor"sv) {
+-        objects->compositor = reinterpret_cast<wl_compositor *>(
+-          wl_registry_bind(registry, name, &wl_compositor_interface, version));
++        objects->compositor.reset(reinterpret_cast<wl_compositor *>(
++          wl_registry_bind(registry, name, &wl_compositor_interface, version)));
+       } else if (interface == "gamescope_swapchain_factory_v2"sv) {
+-        objects->gamescopeSwapchainFactory = reinterpret_cast<gamescope_swapchain_factory_v2 *>(
+-          wl_registry_bind(registry, name, &gamescope_swapchain_factory_v2_interface, version));
++        objects->gamescopeSwapchainFactory.reset(reinterpret_cast<gamescope_swapchain_factory_v2 *>(
++          wl_registry_bind(registry, name, &gamescope_swapchain_factory_v2_interface, version)));
+       }
+     },
+     .global_remove = [](void* data, wl_registry* registry, uint32_t name) {
+@@ -405,6 +417,7 @@
+     GamescopeWaylandObjects waylandObjects;
+     VkSurfaceKHR fallbackSurface;
+     wl_surface* surface;
++    bool isNativeSurface = false;
+ 
+     xcb_connection_t* connection;
+     xcb_window_t window;
+@@ -439,6 +452,9 @@
+       }
+ 
+       cachedWindowRect = *rect;
++
++      if (wl_display_get_error(display))
++        return false;
+ 
+       // Never bypass windows Wine presents offscreen to GDI-blit onto the
+       // real toplevel: marked with _WINE_ALLOW_FLIP=0 or parented under
+@@ -532,8 +548,10 @@
+   VKROOTS_DEFINE_SYNCHRONIZED_MAP_TYPE(GamescopeSurface, VkSurfaceKHR);
+ 
+   struct GamescopeSwapchainData {
++    std::unique_ptr<wl_event_queue, decltype(&wl_event_queue_destroy)> eventQueue{nullptr, wl_event_queue_destroy};
+     gamescope_swapchain *object;
+     wl_display* display;
++    wl_event_queue *globalsQueue;
+     VkSurfaceKHR surface; // Always the Gamescope Surface surface -- so the Wayland one.
+     bool isWayland;
+     bool isBypassingXWayland;
+@@ -542,7 +560,7 @@
+     VkExtent2D extent;
+     uint32_t serverId = 0;
+     bool isHdrColorspace = false;
+-    bool retired = false;
++    std::unique_ptr<std::atomic<bool>> retired = std::make_unique<std::atomic<bool>>(false);
+ 
+     std::unique_ptr<std::mutex> presentTimingMutex = std::make_unique<std::mutex>();
+     std::vector<VkPastPresentationTimingGOOGLE> pastPresentTimings;
+@@ -594,7 +612,7 @@
+             gamescope_swapchain *object) {
+       GamescopeSwapchainData *swapchain = reinterpret_cast<GamescopeSwapchainData*>(data);
+       {
+-        swapchain->retired = true;
++        *swapchain->retired = true;
+       }
+       fprintf(stderr, "[Gamescope WSI] Swapchain retired\n");
+     },
+@@ -790,8 +808,9 @@
+       auto gamescopeSurface = GamescopeSurface::create(*pSurface, GamescopeSurfaceData {
+         .instance        = instance,
+         .display         = pCreateInfo->display,
+-        .waylandObjects  = waylandObjects,
++        .waylandObjects  = std::move(waylandObjects),
+         .surface         = pCreateInfo->surface,
++        .isNativeSurface = true,
+         .flags           = gamescopeInstance->flags,
+         .hdrOutput       = false, // XXXX FIXME FIXME FIXME //hdrOutput,
+       });
+@@ -976,12 +995,15 @@
+             VkInstance                   instance,
+             VkSurfaceKHR                 surface,
+       const VkAllocationCallbacks*       pAllocator) {
+-      if (auto state = GamescopeSurface::get(surface)) {
++      auto state = GamescopeSurface::get(surface);
++      GamescopeSurface::remove(surface);
++      // Driver teardown may access wl_surface. Keep all Wayland objects alive
++      // until both driver surfaces are gone (upstream f61e0a4).
++      if (state && state->fallbackSurface)
+         pDispatch->DestroySurfaceKHR(instance, state->fallbackSurface, pAllocator);
++      pDispatch->DestroySurfaceKHR(instance, surface, pAllocator);
++      if (state && !state->isNativeSurface)
+         wl_surface_destroy(state->surface);
+-      }
+-      GamescopeSurface::remove(surface);
+-      pDispatch->DestroySurfaceKHR(instance, surface, pAllocator);
+     }
+ 
+     static VkResult EnumerateDeviceExtensionProperties(
+@@ -1033,7 +1055,7 @@
+         return VK_ERROR_SURFACE_LOST_KHR;
+       }
+ 
+-      wl_surface* waylandSurface = wl_compositor_create_surface(waylandObjects.compositor);
++      wl_surface* waylandSurface = wl_compositor_create_surface(waylandObjects.compositor.get());
+       if (!waylandSurface) {
+         fprintf(stderr, "[Gamescope WSI] Failed to create wayland surface - xid: 0x%x\n", window);
+         return VK_ERROR_SURFACE_LOST_KHR;
+@@ -1060,6 +1082,7 @@
+       VkResult result = pDispatch->CreateWaylandSurfaceKHR(instance, &waylandCreateInfo, pAllocator, pSurface);
+       if (result != VK_SUCCESS) {
+         fprintf(stderr, "[Gamescope WSI] Failed to create Vulkan wayland surface - vr: %s xid: 0x%x\n", vkroots::helpers::enumString(result), window);
++        wl_surface_destroy(waylandSurface);
+         return result;
+       }
+ 
+@@ -1074,6 +1097,9 @@
+       result = pDispatch->CreateXcbSurfaceKHR(instance, &xcbCreateInfo, pAllocator, &fallbackSurface);
+       if (result != VK_SUCCESS) {
+         fprintf(stderr, "[Gamescope WSI] Failed to create Vulkan xcb (fallback) surface - vr: %s xid: 0x%x\n", vkroots::helpers::enumString(result), window);
++        pDispatch->DestroySurfaceKHR(instance, *pSurface, pAllocator);
++        *pSurface = VK_NULL_HANDLE;
++        wl_surface_destroy(waylandSurface);
+         return result;
+       }
+ 
+@@ -1081,7 +1107,7 @@
+       auto gamescopeSurface = GamescopeSurface::create(*pSurface, GamescopeSurfaceData {
+         .instance        = instance,
+         .display         = gamescopeInstance->display,
+-        .waylandObjects  = waylandObjects,
++        .waylandObjects  = std::move(waylandObjects),
+         .fallbackSurface = fallbackSurface,
+         .surface         = waylandSurface,
+         .connection      = connection,
+@@ -1165,7 +1191,7 @@
+ 
+       if (pCreateInfo->oldSwapchain) {
+         if (auto gamescopeSwapchain = GamescopeSwapchain::get(pCreateInfo->oldSwapchain)) {
+-          gamescopeSwapchain->retired = true;
++          *gamescopeSwapchain->retired = true;
+           // If we are going to/from being able to bypass XWayland, make sure
+           // we NULL out oldSwapchain, as they'll be for different surfaces and swapchain types.
+           if (gamescopeSwapchain->isBypassingXWayland != canBypass)
+@@ -1269,14 +1295,31 @@
+         return result;
+       }
+ 
+-      gamescope_swapchain *gamescopeSwapchainObject = gamescope_swapchain_factory_v2_create_swapchain(
+-        gamescopeSurface->waylandObjects.gamescopeSwapchainFactory,
+-        gamescopeSurface->surface);
++      std::unique_ptr<wl_event_queue, decltype(&wl_event_queue_destroy)> eventQueue{
++        wl_display_create_queue(gamescopeSurface->display), wl_event_queue_destroy};
++      auto *factory = eventQueue ? static_cast<gamescope_swapchain_factory_v2 *>(
++        wl_proxy_create_wrapper(gamescopeSurface->waylandObjects.gamescopeSwapchainFactory.get())) : nullptr;
++      if (!factory) {
++        pDispatch->DestroySwapchainKHR(device, *pSwapchain, pAllocator);
++        *pSwapchain = VK_NULL_HANDLE;
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++      }
++      wl_proxy_set_queue(reinterpret_cast<wl_proxy *>(factory), eventQueue.get());
++      gamescope_swapchain *gamescopeSwapchainObject =
++        gamescope_swapchain_factory_v2_create_swapchain(factory, gamescopeSurface->surface);
++      wl_proxy_wrapper_destroy(factory);
++      if (!gamescopeSwapchainObject) {
++        pDispatch->DestroySwapchainKHR(device, *pSwapchain, pAllocator);
++        *pSwapchain = VK_NULL_HANDLE;
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++      }
+ 
+       {
+         auto gamescopeSwapchain = GamescopeSwapchain::create(*pSwapchain, GamescopeSwapchainData{
++          .eventQueue          = std::move(eventQueue),
+           .object              = gamescopeSwapchainObject,
+           .display             = gamescopeSurface->display,
++          .globalsQueue        = gamescopeSurface->waylandObjects.queue.get(),
+           .surface             = pCreateInfo->surface, // Always the Wayland side surface.
+           .isWayland           = gamescopeSurface->isWayland(),
+           .isBypassingXWayland = canBypass,
+@@ -1338,7 +1381,7 @@
+       const VkAcquireNextImageInfoKHR* pAcquireInfo,
+             uint32_t*                  pImageIndex) {
+       if (auto gamescopeSwapchain = GamescopeSwapchain::get(pAcquireInfo->swapchain)) {
+-        if (gamescopeSwapchain->retired)
++        if (*gamescopeSwapchain->retired)
+           return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+ 
+@@ -1405,7 +1448,10 @@
+       wl_display *display = nullptr;
+       for (uint32_t i = 0; i < presentInfo.swapchainCount; i++) {
+         if (auto gamescopeSwapchain = GamescopeSwapchain::get(presentInfo.pSwapchains[i])) {
+-          if (gamescopeSwapchain->retired) {
++          if (waylandPumpEvents(gamescopeSwapchain->display, gamescopeSwapchain->eventQueue.get(), gamescopeSwapchain->globalsQueue) < 0 &&
++              (gamescopeSwapchain->isWayland || gamescopeSwapchain->isBypassingXWayland))
++            return PresentRetiredSwapchain(pDispatch, queue, pPresentInfo);
++          if (*gamescopeSwapchain->retired) {
+             return PresentRetiredSwapchain(pDispatch, queue, pPresentInfo);
+           }
+ 
+@@ -1461,9 +1507,7 @@
+       });
+ 
+ 
+-      if (display) {
+-        waylandPumpEvents(display);
+-      } else {
++      if (!display) {
+         static bool s_warned = false;
+         if (!s_warned) {
+           int messageId = -1;
+@@ -1603,7 +1647,8 @@
+       }
+ 
+       // Dispatch to get the latest timings.
+-      if (waylandPumpEvents(gamescopeSwapchain->display) < 0)
++      if (waylandPumpEvents(gamescopeSwapchain->display, gamescopeSwapchain->eventQueue.get(), gamescopeSwapchain->globalsQueue) < 0 &&
++          gamescopeSwapchain->isWayland)
+         return VK_ERROR_SURFACE_LOST_KHR;
+ 
+       uint32_t originalCount = *pPresentationTimingCount;
+@@ -1630,7 +1675,8 @@
+       }
+ 
+       // Dispatch to get the latest cycle.
+-      if (waylandPumpEvents(gamescopeSwapchain->display) < 0)
++      if (waylandPumpEvents(gamescopeSwapchain->display, gamescopeSwapchain->eventQueue.get(), gamescopeSwapchain->globalsQueue) < 0 &&
++          gamescopeSwapchain->isWayland)
+         return VK_ERROR_SURFACE_LOST_KHR;
+ 
+       std::unique_lock lock(*gamescopeSwapchain->presentTimingMutex);

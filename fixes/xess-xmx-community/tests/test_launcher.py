@@ -120,11 +120,83 @@ class LauncherTests(unittest.TestCase):
             self.assertFalse(launcher.is_64bit_anv(malformed))
 
     def test_extension_merge_and_optional_flags(self):
-        self.environment["VKD3D_DISABLE_EXTENSIONS"] = "VK_EXT_other, VK_EXT_descriptor_buffer,VK_EXT_other"
+        self.environment["VKD3D_DISABLE_EXTENSIONS"] = (
+            "VK_EXT_other, VK_KHR_present_wait2,VK_EXT_descriptor_buffer,VK_EXT_other,"
+        )
         result = launcher.launch_environment(self.package, self.environment, trace=True, fallback=True, search_dirs=[])
-        self.assertEqual(result["VKD3D_DISABLE_EXTENSIONS"], "VK_EXT_other,VK_EXT_descriptor_buffer")
+        self.assertEqual(result["VKD3D_DISABLE_EXTENSIONS"],
+                         "VK_EXT_other,VK_KHR_present_wait2,VK_EXT_descriptor_buffer")
         self.assertEqual(result["IGDEXT_TRACE"], "1")
         self.assertEqual(result["IGDEXT_FORCE_FALLBACK"], "1")
+
+    def test_empty_extension_list_receives_both_runtime_requirements(self):
+        result = launcher.launch_environment(self.package, self.environment, search_dirs=[])
+        self.assertEqual(result["VKD3D_DISABLE_EXTENSIONS"],
+                         "VK_EXT_descriptor_buffer,VK_KHR_present_wait2")
+        self.assertNotIn("VKD3D_DISABLE_EXTENSIONS", self.environment)
+
+    def test_current_release_root_shim_is_selected_without_prefix_writes(self):
+        original = self.package / "shim/igdext64.dll"
+        current = self.package / "igdext64.dll"
+        original.rename(current)
+        before = {p: p.read_bytes() for p in self.package.rglob("*") if p.is_file()}
+        package = launcher.checked_package(str(self.package))
+        result = launcher.launch_environment(package, self.environment, search_dirs=[])
+        self.assertEqual(result["INTC_ALT_DRIVER_EXTENSIONS_PATH"],
+                         "Z:" + str(self.package).replace("/", "\\"))
+        self.assertEqual({p: p.read_bytes() for p in self.package.rglob("*") if p.is_file()}, before)
+        self.assertFalse((self.root / "home").exists())
+
+    def test_current_release_shim_takes_precedence_over_legacy_build_copy(self):
+        (self.package / "igdext64.dll").write_bytes(b"current release fixture")
+        result = launcher.launch_environment(self.package, self.environment, search_dirs=[])
+        self.assertEqual(result["INTC_ALT_DRIVER_EXTENSIONS_PATH"],
+                         "Z:" + str(self.package).replace("/", "\\"))
+
+    def test_legacy_default_is_retained_and_new_package_requires_explicit_selection(self):
+        self.assertEqual(launcher.parser().parse_args([]).package,
+                         "~/.local/lib/oxp3-xess-community/20261018")
+        self.assertEqual(launcher.parser().parse_args(
+            ["--package", "/private/xess/20261104"]).package, "/private/xess/20261104")
+
+    def test_per_game_wsi_workaround_and_mesa_selection_are_preserved_and_inspectable(self):
+        arguments = ["game", "--literal-argument"]
+        for flag in ("DISABLE_GAMESCOPE_WSI", "ENABLE_GAMESCOPE_WSI"):
+            environment = {**self.environment, "MESA": "26.1", flag: "1"}
+            with self.subTest(flag=flag), \
+                    mock.patch.dict(os.environ, environment, clear=True), \
+                    mock.patch.object(os, "geteuid", return_value=1000), \
+                    mock.patch.object(os, "execvpe") as execute:
+                launcher.main(["--package", str(self.package), "--", *arguments])
+                child_environment = execute.call_args.args[2]
+                self.assertEqual(child_environment[flag], "1")
+                self.assertEqual(child_environment["MESA"], "26.1")
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    launcher.main(["--package", str(self.package), "--print-env"])
+            inspected = json.loads(output.getvalue())
+            self.assertEqual(inspected[flag], "1")
+            self.assertEqual(inspected["MESA"], "26.1")
+            self.assertNotIn("PRIVATE_SECRET", inspected)
+
+    def test_hdr_wsi_layer_paths_are_preserved_and_inspectable_without_other_variables(self):
+        environment = {**self.environment,
+                       "VK_ADD_IMPLICIT_LAYER_PATH": "/private WSI:/other/layer",
+                       "OXP3_GTA_HDR_WSI": "/private WSI",
+                       "PRIVATE_SECRET": "must not appear"}
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(os, "geteuid", return_value=1000), \
+                mock.patch.object(os, "execvpe") as execute:
+            launcher.main(["--package", str(self.package), "--", "game"])
+            child_environment = execute.call_args.args[2]
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                launcher.main(["--package", str(self.package), "--print-env"])
+        inspected = json.loads(output.getvalue())
+        for key in ("VK_ADD_IMPLICIT_LAYER_PATH", "OXP3_GTA_HDR_WSI"):
+            self.assertEqual(child_environment[key], environment[key])
+            self.assertEqual(inspected[key], environment[key])
+        self.assertNotIn("PRIVATE_SECRET", inspected)
 
     def test_off_executes_exact_arguments_and_environment_without_package_or_writes(self):
         arguments = ["/a path/proton", "waitforexitandrun", "game;$()", "a b", "--flag=value"]

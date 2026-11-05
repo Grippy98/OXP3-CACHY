@@ -21,17 +21,28 @@ from typing import Mapping, Sequence
 
 
 DEFAULT_PACKAGE = "~/.local/lib/oxp3-xess-community/20261018"
-DISABLED_EXTENSION = "VK_EXT_descriptor_buffer"
+DISABLED_EXTENSIONS = ("VK_EXT_descriptor_buffer", "VK_KHR_present_wait2")
 PRINT_KEYS = (
     "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES",
     "VKD3D_DISABLE_EXTENSIONS", "ANV_CM_KERNEL_DIR", "ANV_CM_HELPER",
     "INTC_ALT_DRIVER_EXTENSIONS_PATH", "force_vk_vendor",
     "IGDEXT_TRACE", "IGDEXT_FORCE_FALLBACK", "PROTON_ENABLE_HDR", "DXVK_HDR",
+    "MESA", "XESS_FG", "IGDEXT_XELL_CAP", "FFX_XEFG_MULT",
+    "ENABLE_GAMESCOPE_WSI", "DISABLE_GAMESCOPE_WSI",
+    "VK_ADD_IMPLICIT_LAYER_PATH", "OXP3_GTA_HDR_WSI",
 )
 
 
 class LauncherError(Exception):
     """An invalid package or configuration; the child has not been started."""
+
+
+def shim_directory(package: Path) -> Path:
+    """Support current release archives and the original local source builds."""
+    for directory in (package, package / "shim"):
+        if (directory / "igdext64.dll").is_file():
+            return directory
+    raise LauncherError("missing package file: igdext64.dll (or shim/igdext64.dll)")
 
 
 def checked_package(value: str) -> Path:
@@ -44,11 +55,12 @@ def checked_package(value: str) -> Path:
     if any(character in str(package) for character in (":", "\\", "\n", "\r")):
         raise LauncherError("package paths cannot contain colons, backslashes or line breaks")
     for relative in (
-        "lib/libvulkan_intel.so", "shim/igdext64.dll",
+        "lib/libvulkan_intel.so",
         "tools/cm-compile.sh", "tools/cmk_pack.py",
     ):
         if not (package / relative).is_file():
             raise LauncherError(f"missing package file: {relative}")
+    shim_directory(package)
     if not os.access(package / "tools/cm-compile.sh", os.X_OK):
         raise LauncherError("package helper is not executable: tools/cm-compile.sh")
     if not (package / "kernels").is_dir():
@@ -204,12 +216,13 @@ def launch_environment(package: Path, original: Mapping[str, str], *,
     environment["VK_DRIVER_FILES"] = os.pathsep.join(str(path) for path in [manifest, *retained])
     extensions = [part.strip() for part in original.get("VKD3D_DISABLE_EXTENSIONS", "").split(",")
                   if part.strip()]
-    if DISABLED_EXTENSION not in extensions:
-        extensions.append(DISABLED_EXTENSION)
+    for extension in DISABLED_EXTENSIONS:
+        if extension not in extensions:
+            extensions.append(extension)
     environment["VKD3D_DISABLE_EXTENSIONS"] = ",".join(dict.fromkeys(extensions))
     environment["ANV_CM_KERNEL_DIR"] = str(package / "kernels")
     environment["ANV_CM_HELPER"] = str(package / "tools/cm-compile.sh")
-    environment["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = "Z:" + str(package / "shim").replace("/", "\\")
+    environment["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = "Z:" + str(shim_directory(package)).replace("/", "\\")
     environment["force_vk_vendor"] = "0"
     if trace:
         environment["IGDEXT_TRACE"] = "1"

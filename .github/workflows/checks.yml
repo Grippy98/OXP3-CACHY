@@ -22,4 +22,11 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
+      - name: XeSS launcher and per-game Core installer tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -m unittest discover -s fixes/xess-xmx-community/tests -p 'test_*.py' -v
+          python3 -m unittest discover -s fixes/gta-enhanced-hdr/vkd3d/tests -p 'test_*.py' -v
+
 # These checks do not install fixes, build a kernel/EFI image, or validate hardware.

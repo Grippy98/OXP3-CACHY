@@ -2,7 +2,8 @@
   "community": {
     "url": "https://github.com/HHHHanasak1/xess-xmx-linux",
     "commit": "627566641c360c7a0e5d529898b2a81daef1c7ab",
-    "release": "20261018"
+    "release": "20261018",
+    "role": "Historical source-build pin; build helpers retain this version."
   },
   "mesa": {
     "version": "26.3.0-rc1",
@@ -55,5 +56,318 @@
     "report_limits": "Initially selected 2x, later saved 4x; multiplier active during the FPS report and whether the overlay counted generated frames are unknown. No base rendering rate or controlled performance gain is established.",
     "runtime_checks": "Private ANV and shim mapped; fresh frame-generation library callers; 114 successful kernel compilations, no recorded compilation failures or recent GPU hang/reset during the check.",
     "pending": "Completed XMX dispatch, controlled SR/FG correctness and performance comparisons, and HDR."
+  },
+  "current_release": {
+    "community": {
+      "url": "https://github.com/HHHHanasak1/xess-xmx-linux",
+      "release": "20261104",
+      "commit": "a12948e247dfe43646cdb1409d0f2752633f7883",
+      "asset_url": "https://github.com/HHHHanasak1/xess-xmx-linux/releases/download/20261104/xess-xmx-linux-20261104.zip",
+      "sha256": "4d97b77e44f22235a567d0b5317421e65566089dc08a6a0caf9fa16549433173"
+    },
+    "mesa": {
+      "default": "26.3.0-rc3",
+      "alternate": "26.1.2",
+      "scope": "Private child-process driver; system Mesa unchanged."
+    },
+    "intel_xess_sdk": {
+      "release": "v3.0.2",
+      "url": "https://github.com/intel/xess/releases/download/v3.0.2/XeSS_SDK_3.0.2.zip",
+      "sha256": "88b8a373f30e33f3558a77a93e634f11b8132fc3047ea1a8edeead32b8471990",
+      "sr": "2.0.2.68",
+      "fg": "1.3.1.78",
+      "xell": "1.3.2.10"
+    },
+    "amd_loader": {
+      "release": "v2.4.0",
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll",
+      "sha256": "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb",
+      "license_url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/docs/license.md",
+      "license_sha256": "32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb"
+    },
+    "compiler": "IGC v2.10.10 and ocloc 25.18.33578.6; pinned by release tools/get-igc.sh.",
+    "launcher": {
+      "default_package_retained": "20261018",
+      "explicit_package": "20261104",
+      "shim_layouts": [
+        "igdext64.dll",
+        "shim/igdext64.dll"
+      ],
+      "disabled_vkd3d_extensions": [
+        "VK_EXT_descriptor_buffer",
+        "VK_KHR_present_wait2"
+      ],
+      "inspection_passthrough": [
+        "ENABLE_GAMESCOPE_WSI",
+        "DISABLE_GAMESCOPE_WSI",
+        "VK_ADD_IMPLICIT_LAYER_PATH",
+        "OXP3_GTA_HDR_WSI"
+      ],
+      "gta_profile": {
+        "entrypoint": "gta-launch.sh",
+        "implementation": "gta-launch.py",
+        "package_default": "20261104",
+        "mesa_default": "26.1",
+        "forced_process_environment": {
+          "DISABLE_GAMESCOPE_WSI": "1"
+        },
+        "wine_override": "Retains other rules, removes conflicting DXGI entries and appends dxgi=n,b.",
+        "file_changes": "No game, INI, prefix, Steam or service edits; shared launcher may create its private Vulkan manifest.",
+        "default_profile": "legacy SDR, Gamescope WSI disabled for the child process",
+        "hdr_profile": {
+          "argument": "--hdr before an optional -- and the child command",
+          "default_wsi_directory": "~/.local/lib/oxp3-gamescope-wsi/3.16.25-event-queues-20261105",
+          "wsi_directory_override": "OXP3_GTA_HDR_WSI",
+          "removed_process_environment": [
+            "DISABLE_GAMESCOPE_WSI"
+          ],
+          "forced_process_environment": {
+            "ENABLE_GAMESCOPE_WSI": "1"
+          },
+          "layer_path": "Prepend the private directory to VK_ADD_IMPLICIT_LAYER_PATH, retaining other entries and deduplicating in order.",
+          "read_only_presence_checks": [
+            "VkLayer_FROG_gamescope_wsi.x86_64.json",
+            "libVkLayer_FROG_gamescope_wsi_x86_64.so"
+          ],
+          "settings_scope": "No automatic INI or game HDR/SR/FG changes. The private layer must already be prepared.",
+          "setup": "../gta-enhanced-hdr/README.md",
+          "tested_profile_environment": {
+            "MESA": "26.3",
+            "WINEDLLOVERRIDES": "d3d12core=n,b; helper merges DXGI entry and retains other rules"
+          },
+          "core_installer": "../gta-enhanced-hdr/vkd3d/install-vkd3d.py",
+          "qualification": "Helper code has unit tests only; Core 3.1 HDR/SR hardware passes used existing device wrapper. Private WSI directory is still required by --hdr."
+        },
+        "validation": {
+          "unit_tests": "Included in the 45 launcher/compiler/profile tests.",
+          "hardware": "New repository helper not yet launched on the device. Reported SDR/HDR hardware observations used the existing device wrapper; on-device equivalence remains unverified."
+        }
+      }
+    },
+    "gta_enhanced": {
+      "steam_appid": 3240220,
+      "method": "Pinned GTA OptiScaler/native-FFX/Intel private runtime. Current HDR+XeSS SR uses official app-directory vkd3d-proton 3.1 Core, original system32 D3D12 loader, private Mesa 26.3 and private WSI candidate. Historical pre-Core SDR XeFG/HUD pass used manual RenderUI with WSI disabled.",
+      "dxgi_proxy": true,
+      "gpu_spoofing": false,
+      "prefix_or_proton_modifications": false,
+      "initial_config": {
+        "Dx12Upscaler": "xess",
+        "EnableFfxInputs": true,
+        "UseFfxInputs": true,
+        "EnableDlssInputs": false,
+        "EnableXeSSInputs": false,
+        "Dxgi": false,
+        "StreamlineSpoofing": false,
+        "Enabled": true,
+        "FGInput": "fsrfg",
+        "FGOutput": "xefg",
+        "InterpolationCount": 1,
+        "EnableHotSwapping": true,
+        "DxgiFactoryWrapping": false,
+        "SimulateWaitableObject": false,
+        "DrawUIOverFG": true,
+        "DisableUI": false,
+        "DisableHudless": "auto",
+        "UIPremultipliedAlpha": "auto",
+        "UIComposition": false,
+        "LoadReshade": false
+      },
+      "validation": "Current HDR/SR: fresh XeSS SR 2.0.2 initialization, ReShade/RenoDX D3D12 initialization, application HDR feedback and Story gameplay on two short Core-only 3.1 cold starts. Native FSR FG flickered; Intel XeFG failed proxy-swapchain teardown. Historical pre-Core SDR owner confirmed HUD/map/phone with manual RenderUI; no post-Core SDR, measured 2x, latency or long-play result.",
+      "direct_provider_trial": {
+        "result": "Not recommended for GTA: initialization stall/watchdog termination repeated with FG disabled.",
+        "observed": "SR context creation and callback return succeeded; last recorded API entry was phase-count query 0x10004. Query return/output were not established; no XeSS initialization/dispatch observed. No new GPU hang/reset observed.",
+        "limits": "Provider path and driver changed together compared with the working native FSR control; no isolated bridge or Mesa bug is established."
+      },
+      "native_control": "Native FSR reached the menu on stock Mesa. Earlier failed tests changed multiple driver/provider/settings/startup factors; no isolated Mesa/Jay bug is established.",
+      "mesa_selection": "Current HDR: MESA=26.3 (private 26.3.0-rc3); historical SDR FG/HUD: MESA=26.1 (private 26.1.2). Helper default remains 26.1 and explicit inherited value is preserved.",
+      "sr_result": {
+        "render_size": "1280x800",
+        "output_size": "1920x1200",
+        "menu_selection": "FSR Quality",
+        "saved_ResScalingType": 3,
+        "observation": "Continuous ffxDispatch_Dx12 and XeSSFeatureDx12 EvaluateInternal execute calls; owner confirmed normal image/gameplay.",
+        "limits": "Driver-identity changes can reset game upscaling. Menu visibility or saved settings were not accepted as execution proof. Mesa 26.3 has not been isolated as the sole cause of earlier stalls.",
+        "startup_state": "Earlier upstream v10 trial: SR was enabled after startup with SR reset off. This is distinct from the current fork/WSI startup combination.",
+        "runtime_checks": "Historical SDR: private shim/Mesa 26.1.2 and SR libxess-to-igdext calls. Current HDR: latest private shim/Mesa 26.3 selected, fresh XeSS SR 2.0.2 initialization, Story gameplay and HDR feedback.",
+        "current_HDR_result": "Fresh SR 2.0.2 initialization and Story gameplay with official 3.1 Core/original loader, private Mesa 26.3, RenoDX and private WSI; no FG."
+      },
+      "native_ffx": {
+        "support_relative_path": "OptiScaler/gta-stock-ffx.dll",
+        "origin": "Copy of original game-root amd_fidelityfx_dx12.dll, retained at root too.",
+        "observed_sha256": "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6",
+        "override": "[Libraries] FfxDx12Path is the full Windows path to that copy; FfxDx12SRPath/FfxDx12FGPath auto.",
+        "standalone_amd_d3d12_providers": "Quarantined at root and support locations to prevent separate module precedence."
+      },
+      "hud_status": {
+        "status": "Historical pre-Core SDR manual-UI pass accepted; current HDR+SR HUD normal with FG Off in short tests; combined HDR+FG unresolved.",
+        "earlier_sdr_symptom": "Minimap and phone disappear with FG On, return with FG Off.",
+        "normal_play": "HDR+SR with Core 3.1/private Mesa 26.3/private WSI reached Story twice with FG Off. Earlier manual-UI SDR pass predates Core update. Long-play/broader scenes unqualified.",
+        "full_backbuffer_startup_trial": {
+          "profile": "Private HDR WSI layer; complete-backbuffer interpolation",
+          "FrameGen.Enabled": true,
+          "FrameGen.FGInput": "fsrfg",
+          "FrameGen.FGOutput": "xefg",
+          "FrameGen.DisableHudless": true,
+          "FrameGen.DisableUI": true,
+          "XeFG.UIComposition": false,
+          "tested_proton": [
+            "Proton Experimental",
+            "Proton 11.0-2"
+          ],
+          "validation": "Earlier pre-Core startup trials failed; newer Core 3.1 HDR/full-backbuffer trial failed SDK Destroy due outstanding proxy-swapchain reference during GTA FFX replacement. No combined-HDR HUD fix result.",
+          "FrameGen.DrawUIOverFG": false,
+          "source_audit": "Pinned wrapper destroys XeFG context before releasing underlying proxy reference. Initial depth/MV flags already match later GTA flags. A source lifetime remedy is being investigated; no new patch runtime-qualified."
+        },
+        "earlier_ui_composition_trial": {
+          "FrameGen.DisableUI": false,
+          "XeFG.UIComposition": true,
+          "validation": "Later owner SDR test confirmed HUD still missing with DisableUI=false and UIComposition=true. The manual RenderUI configuration restored it."
+        },
+        "sdr_config_workaround": {
+          "FrameGen.Enabled": true,
+          "FrameGen.FGInput": "fsrfg",
+          "FrameGen.FGOutput": "xefg",
+          "FrameGen.DrawUIOverFG": true,
+          "FrameGen.DisableUI": false,
+          "FrameGen.DisableHudless": "auto",
+          "FrameGen.UIPremultipliedAlpha": "auto",
+          "XeFG.UIComposition": false,
+          "profile": "Existing device wrapper with per-game WSI layer disabled; the new repository helper has unit-test validation only.",
+          "owner_result": "HUD/map/phone all work",
+          "runtime_observation": "Repeated UI[0..3] resources and RenderUI buffer/pass activity, successful depth/velocity/HUDless SDK tags, XeFG selected; no UIColor SDK tags observed.",
+          "limits": "Short visual result only; actual 2x presentation, native/generated-frame split, latency, long-play and broader scene coverage not measured.",
+          "Plugins.LoadReshade": false,
+          "qualification_timing": "Owner visual result predates per-game Core 3.1 update; no post-Core SDR equivalence established."
+        }
+      },
+      "runtime_warnings": "Earlier SDR FG trial: interpolation rectangle fell back to swapchain size without ending gameplay; context-destroy outstanding-reference message occurred during a Story transition.",
+      "configured_frame_generation_multiplier": 2,
+      "sdr_environment": {
+        "MESA": "26.1",
+        "DISABLE_GAMESCOPE_WSI": "1",
+        "WINEDLLOVERRIDES": "dxgi=n,b"
+      },
+      "hdr_environment": {
+        "MESA": "26.3",
+        "ENABLE_GAMESCOPE_WSI": "1",
+        "VK_ADD_IMPLICIT_LAYER_PATH": "Private WSI directory first, followed by preserved/deduplicated existing entries.",
+        "WINEDLLOVERRIDES": "Existing non-DXGI rules retained; explicit d3d12core=n,b plus merged dxgi=n,b.",
+        "removed": [
+          "DISABLE_GAMESCOPE_WSI"
+        ]
+      },
+      "earlier_fg_saved_game_settings": {
+        "ResScalingType": 3,
+        "FrameGenType": 2
+      },
+      "compatibility_status": "HDR+XeSS SR passed two short Core-only 3.1 Story cold starts; native FSR FG flicker and Intel XeFG teardown failure remain unresolved. Historical SDR HUD pass predates Core update.",
+      "cold_start_status": {
+        "result": "Current HDR+XeSS SR passes in two short Core-only 3.1 Story cold starts",
+        "current_profile": "Official 3.1 app Core/original system32 loader; private Mesa 26.3; private WSI candidate; FG Off",
+        "historical_pre_core": "One earlier private-WSI-only HDR run succeeded; later durable/restored exact earlier profiles froze.",
+        "fg_enabled": "Native FSR FG owner flicker/artifacting; Intel XeFG full-backbuffer trial SDK reference-count teardown failure.",
+        "cause_limit": "Official 3.1 contains exact upstream dropped-fence-event-registration fix. Individual WSI/Mesa necessity and all long-play reliability are not established."
+      },
+      "driver_change_checks": {
+        "symptom": "Changing Mesa selection or GPU identity can reset GTA SR/FG settings to Off (ResScalingType=0, FrameGenType=0).",
+        "required": "Check the actual running graphics menu, reselect intended settings and confirm fresh SR evaluation/dispatch. A Story launch, HDR feedback, saved XML or shader-cache creation alone does not establish SR execution."
+      },
+      "initial_config_scope": "Historical pre-Core SDR manual-UI profile; current working HDR profile uses hdr_sr_config instead.",
+      "historical_pre_core_hdr_pass": {
+        "FrameGen.Enabled": false,
+        "FrameGen.FGInput": "nofg",
+        "FrameGen.FGOutput": "nofg",
+        "game_frame_generator": "Off",
+        "game_upscaler": "AMD FSR 3.1 Quality (XeSS output through OptiScaler)",
+        "Plugins.LoadReshade": true,
+        "chain": "Existing OptiScaler dxgi.dll loads ReShade64.dll, which discovers renodx-gtav-enhanced.addon64.",
+        "output": "HDR10",
+        "hdr_fix": "../gta-enhanced-hdr/README.md",
+        "hdr_source_pins": "../gta-enhanced-hdr/SOURCE.json",
+        "qualification": "Historical single owner visual pass on Mesa 26.1/private WSI before Core update; later identical-profile cold starts froze. Superseded by short Core-only 3.1 HDR/SR passes, without proving WSI necessity."
+      },
+      "hdr_sr_config": {
+        "MESA": "26.3",
+        "FrameGen.Enabled": false,
+        "FrameGen.FGInput": "nofg",
+        "FrameGen.FGOutput": "nofg",
+        "Plugins.LoadReshade": true,
+        "game_frame_generator": "Off",
+        "game_upscaler": "AMD FSR 3.1 Quality input, XeSS SR output",
+        "core_version": "3.1",
+        "core_sha256": "0dfd690a39ef8361ca3b64e9fd8e945b27d2c568dac5dc0dce1a45abf65914cc",
+        "loader": "Original prefix system32 d3d12.dll retained",
+        "dll_override": "d3d12core=n,b merged with existing rules and helper DXGI override",
+        "private_wsi_profile": "3.16.25-event-queues-20261105",
+        "hdr_fix": "../gta-enhanced-hdr/README.md",
+        "core_guide": "../gta-enhanced-hdr/vkd3d/README.md",
+        "core_installer": "../gta-enhanced-hdr/vkd3d/install-vkd3d.py",
+        "core_source_pins": "../gta-enhanced-hdr/vkd3d/source-pins.json",
+        "qualification": "Two short Story cold starts with fresh XeSS SR initialization, RenoDX D3D12/HDR feedback and normal HUD/gameplay; owner reports works. No long-play/performance/combined-FG claim.",
+        "causality_limit": "Private WSI candidate retained; necessity of WSI/Mesa selection and stock-layer comparison for this exact combination unqualified."
+      }
+    },
+    "optiscaler": {
+      "url": "https://github.com/daniel-h-0/OptiScaler",
+      "release": "bc250-273e8d4",
+      "source_commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+      "release_url": "https://github.com/daniel-h-0/OptiScaler/releases/tag/bc250-273e8d4",
+      "dll_url": "https://github.com/daniel-h-0/OptiScaler/releases/download/bc250-273e8d4/OptiScaler.dll",
+      "dll_sha256": "044cac6be344a6619e02af9cb0930eed4165ec606dc74486a1d28a573242ec87",
+      "default_ini_sha256": "e08ac5e1de899bce37710ffe82f6dfc6e31edfa7febb11a8a9db4ac8dac41e95",
+      "source_manifest_url": "https://github.com/daniel-h-0/OptiScaler/releases/download/bc250-273e8d4/OptiScaler-bc250-273e8d4-source.json",
+      "source_manifest_sha256": "2407174cdc2a462d82736d8ca6cec49b8619ca063f3ced96c4b39525eaa6226b",
+      "recursive_source_url": "https://github.com/daniel-h-0/OptiScaler/releases/download/bc250-273e8d4/OptiScaler-bc250-273e8d4-source.tar.xz",
+      "recursive_source_sha256": "d469d22d5e3e4136c578e858b737f56604168f4f990771e0590bfb611ff455ef",
+      "license": "GPL-3.0 upstream notice retained in licenses/OptiScaler-GPL-3.0.txt",
+      "license_url": "https://raw.githubusercontent.com/daniel-h-0/OptiScaler/273e8d449763d0e9e051dee831dc42badcd15d00/LICENSE",
+      "license_sha256": "e57f1c320b8cf8798a7d2ff83a6f9e06a33a03585f6e065fea97f1d86db84052",
+      "scope": "Reviewed GTA Social Club auxiliary-factory handling and Streamline initialization locking. Official Intel SDK libraries retained; FreeFG replacement/pacer not activated.",
+      "ui_refresh_proposal": {
+        "path": "patches/PROPOSAL-273e8d4-refresh-xefg-ui-texture.patch",
+        "status": "PROPOSAL ONLY: apply-checked; not built or deployed; not responsible for the runtime workaround result.",
+        "target_source_commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+        "target_file": "OptiScaler/framegen/xefg/XeFG_Dx12.cpp",
+        "target_git_blob_sha1": "492e55530ea5b3cb4ad9893162692fc1eaaf2679",
+        "target_sha256": "a7e0f6d02879a0f0cbaa90ac5d83691b776fc57a6441d62ad5f8f6f6484cb46e",
+        "patch_sha256": "021157f34ed04766df05846a27bc17e496163e1667e3b2bb61571b18fff9d940",
+        "change": "Refresh cached UIColor in Dispatch like HUDless, guarded by SDK UI-composition API availability; retain existing resource/tag logic.",
+        "validation": "git apply --check passed against exact pinned source; no build/hardware validation."
+      }
+    },
+    "earlier_upstream_nightly_trial": {
+      "source_commit": "380b9c67594474778ef269d9ce9120461412977c",
+      "nightly_tag": "nightly-20261105",
+      "sha256": "e26810c76451666da0bcc40be62722e7b4a5d36c550036830b98f5eb69e0648c",
+      "status": "Earlier diagnostic combination; not the current GTA interception layer."
+    },
+    "hdr_components": {
+      "documentation": "../gta-enhanced-hdr/README.md",
+      "source_pins": "../gta-enhanced-hdr/SOURCE.json",
+      "wsi_build": "../gta-enhanced-hdr/BUILDING.md",
+      "private_wsi_profile": "3.16.25-event-queues-20261105",
+      "reshade_addon_loader": "6.8.0 (x64 DLL 6.8.0.2155)",
+      "renodx_gta_addon": "0.2026.1104.1857",
+      "system_gamescope_replaced": false,
+      "compatibility_status": "HDR+XeSS SR passed two short Core-only 3.1 Story cold starts; combined native FSR/Intel XeFG remains unqualified.",
+      "vkd3d": {
+        "version": "3.1",
+        "source_commit": "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1",
+        "fix_commit": "49a1e2c7098f4646374458b9a8fbc7c0d0b5ff3d",
+        "archive_sha256": "b85ea8219b71093a3924913dd7aae6172333dc0c069983ed510816d67f02120b",
+        "core_sha256": "0dfd690a39ef8361ca3b64e9fd8e945b27d2c568dac5dc0dce1a45abf65914cc",
+        "deployment": "Game-directory x64 Core only; preserve original system32 loader for ReShade device hooks",
+        "guide": "../gta-enhanced-hdr/vkd3d/README.md",
+        "source_pins": "../gta-enhanced-hdr/vkd3d/source-pins.json",
+        "rollback_limit": "Use recorded Core rollback to return to exact pre-Core SDR baseline; no post-Core SDR visual qualification."
+      }
+    },
+    "test_validation": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'",
+      "tests_passed": 45,
+      "shell_syntax": "bash -n gta-launch.sh passed",
+      "scope": "Launcher/compiler/profile behavior only; does not execute the game, native community code or GPU.",
+      "hardware_scope": "The 45 tests do not launch the new repository GTA helper on-device; runtime observations used the existing device wrapper."
+    }
   }
 }

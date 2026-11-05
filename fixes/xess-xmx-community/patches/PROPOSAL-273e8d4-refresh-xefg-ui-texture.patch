@@ -1,0 +1,23 @@
+--- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
++++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
+@@ -799,6 +799,20 @@
+     if (!_noHudless[fIndex])
+     {
+         auto res = &_frameResources[fIndex][FG_ResourceType::HudlessColor];
++        if (res->validity != FG_ResourceValidity::ValidNow)
++        {
++            res->validity = FG_ResourceValidity::UntilPresentFromDispatch;
++            res->frameIndex = fIndex;
++            SetResource(res);
++        }
++    }
++
++    // UntilPresent UI inputs are cached by SetResource, like HUDless inputs.
++    // Refresh them at dispatch so SDKs with UI composition support receive
++    // the UI texture for the same frame as the other tagged resources.
++    if (!_noUi[fIndex] && XeFGProxy::SetUiCompositionState() != nullptr)
++    {
++        auto res = &_frameResources[fIndex][FG_ResourceType::UIColor];
+         if (res->validity != FG_ResourceValidity::ValidNow)
+         {
+             res->validity = FG_ResourceValidity::UntilPresentFromDispatch;

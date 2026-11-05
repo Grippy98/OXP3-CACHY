@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "profile": "3.16.25-event-queues-20261105",
+  "gamescope": {
+    "url": "https://github.com/ValveSoftware/gamescope",
+    "tag": "3.16.25",
+    "commit": "17baf4abd1ab3353fb705e4d0d023f84e870f7e8",
+    "license": "BSD-2-Clause"
+  },
+  "vkroots": {
+    "url": "https://github.com/Joshua-Ashton/vkroots",
+    "commit": "5106d8a0df95de66cc58dc1ea37e69c99afc9540",
+    "license": "Apache-2.0 OR MIT",
+    "chosen_header_license": "MIT"
+  },
+  "upstream_backport_sources": [
+    "1e7a0bbca86f00157bbce464294a149125790c18",
+    "92363db5088393f62aebe43a050b5af26d792ea4",
+    "330b8c131589194206cdf645599099304748e56f",
+    "f61e0a44843f8b340749615d2f072651666e760d"
+  ],
+  "patch": {
+    "path": "patches/0001-private-wayland-event-queues.patch",
+    "sha256": "e302bbb4d3173f7dd26f45b4894e81ee0c8b366a3d8f6a0b3bf70b96e54f94d2",
+    "modified_layer_sha256": "0117849fb0e52b0840a35a1f5249d468d76ce08474b743be396de910a436ab8e",
+    "method": "Manual old-vkroots-API backport of event-queue isolation, proxy ownership and teardown fixes; registry startup uses one private roundtrip rather than an initial blocking dispatch."
+  },
+  "validation": {
+    "compile": "The complete private builder downloaded and verified the nine pinned inputs, applied and verified the patch, compiled and linked on Linux x86-64, and resolved dependencies before publication. This establishes buildability, not game compatibility.",
+    "runtime": "HDR transport was demonstrated in one GTA V Enhanced Story Mode session on Intel OXP3/CachyOS with XeSS SR, RenoDX and frame generation disabled. HDR10/PQ/BT.2020/R10 output and compositor HDR-input feedback were verified; the owner reported HDR, gameplay and HUD looked correct in that run. Subsequent cold starts froze or exited even with frame generation disabled and the previously used settings restored.",
+    "limits": "The queue patch is not an established startup fix. One successful Story Mode HDR session does not establish reliable game compatibility; later cold-start failures remain unresolved. No guarantee for frame generation, other applications, long play, suspend/resume or future versions. Captured thread locations did not establish a WSI/Wayland/XCB blocking frame, so an event-queue deadlock is unproven.",
+    "status": "experimental candidate; HDR transport demonstrated once, reliable cold startup unresolved"
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/LICENSE",
+      "sha256": "907dd845489cd09c25f18b6819f476805285e2adcad8c099e3506260023e9e5f"
+    },
+    {
+      "path": "protocol/gamescope-swapchain.xml",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/protocol/gamescope-swapchain.xml",
+      "sha256": "b6f2f1c62abbaf5574e99291a9aaafa0f17af8da1c9468dc8091f2d114b2d479"
+    },
+    {
+      "path": "layer/xcb_helpers.hpp",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/layer/xcb_helpers.hpp",
+      "sha256": "169983c554a547408c2e601c8c0193f881ab140788c5ed5b3e4f0d7ba2ad476c"
+    },
+    {
+      "path": "layer/VkLayer_FROG_gamescope_wsi.cpp",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/layer/VkLayer_FROG_gamescope_wsi.cpp",
+      "sha256": "93c73528c56a52c4302dde2dc2df5f4238fe493c4d190e7b35f9021a5e0a598a"
+    },
+    {
+      "path": "layer/vulkan_operators.hpp",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/layer/vulkan_operators.hpp",
+      "sha256": "dea9b8bef8f8a7e266a4987c84f142606fa648f30379c4800d5867498b291ac9"
+    },
+    {
+      "path": "src/messagey.h",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/src/messagey.h",
+      "sha256": "89002d06c2bc24a8b1f782f4bd633208be8eb9fe2de425bafc020f951e9c6111"
+    },
+    {
+      "path": "src/color_helpers.h",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/src/color_helpers.h",
+      "sha256": "b7ca1a97cc9ec34c8a671c3e598e7094974dcf8b1831e99fc83f787f84e5fc0e"
+    },
+    {
+      "path": "src/layer_defines.h",
+      "url": "https://raw.githubusercontent.com/ValveSoftware/gamescope/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/src/layer_defines.h",
+      "sha256": "cc3e3eec0a035d51e96e3f360ed8d31b521d14f171e0a6cb0ba10da59fb467ed"
+    },
+    {
+      "path": "vendor/vkroots/vkroots.h",
+      "url": "https://raw.githubusercontent.com/Joshua-Ashton/vkroots/5106d8a0df95de66cc58dc1ea37e69c99afc9540/vkroots.h",
+      "sha256": "69b0aa3fb54cf51980414cd4cc58d17d183dfa4363162dcdc63b01977cb7cd2f"
+    }
+  ],
+  "retained_licenses": {
+    "licenses/vkroots-MIT.txt": "382e6eef26b513399da2ea81645449ef887bfbd24231d0d308e591f6465a43d5",
+    "licenses/Gamescope-LICENSE.txt": "907dd845489cd09c25f18b6819f476805285e2adcad8c099e3506260023e9e5f",
+    "licenses/vkroots-LICENSE.txt": "66d083f861a7f030f00a7edd80b616f3d762fed5d0ddc34eb133a9e792e2691d",
+    "licenses/SDL-message-helper-Zlib.txt": "c399cba0b7366bda0eb234833066f996614e9e9d53ea025cd91792d36445eb0e"
+  }
+}

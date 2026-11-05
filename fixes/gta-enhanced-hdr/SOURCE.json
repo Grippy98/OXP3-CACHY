@@ -1,0 +1,161 @@
+{
+  "reshade": {
+    "version": "6.8.0 full add-on build",
+    "installer_url": "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe",
+    "installer_sha256": "afe4c8f13048306307983b8b3d41d5bf00a86820440b0e57dea10950e1176445",
+    "dll_sha256": "0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7",
+    "source_tag": "https://github.com/crosire/reshade/tree/v6.8.0",
+    "extraction": "Python zipfile; extracted only ReShade64.dll"
+  },
+  "renodx": {
+    "url": "https://clshortfuse.github.io/renodx/renodx-gtav-enhanced.addon64",
+    "sha256": "0b5391d602544891b27857e37cd10958f902676443a9edd570538f7de84893c5",
+    "source_commit_observed": "bc0ead39917634e95c534f7e8cfb59ab82880747",
+    "source_game": "https://github.com/clshortfuse/renodx/blob/bc0ead39917634e95c534f7e8cfb59ab82880747/src/games/gtav-enhanced/addon.cpp",
+    "snapshot_workflow": "https://github.com/clshortfuse/renodx/actions/runs/41891539416",
+    "snapshot_workflow_head_sha": "bc0ead39917634e95c534f7e8cfb59ab82880747",
+    "snapshot_workflow_completed_utc": "2026-11-04T20:12:22Z",
+    "hosted_last_modified": "2026-11-04T20:12:11Z",
+    "provenance_limit": "Current upstream snapshot download pinned by SHA256. Same-commit successful snapshot workflow and hosted timestamp correlate; no reproducible-build or signed-attestation verification performed."
+  },
+  "chain": {
+    "opti_proxy": "dxgi.dll unchanged",
+    "ReShade_file": "game-root ReShade64.dll",
+    "opti_ini": {
+      "Plugins.LoadReshade": true,
+      "FrameGen.Enabled": false,
+      "FrameGen.FGInput": "nofg",
+      "FrameGen.FGOutput": "nofg"
+    },
+    "game_addon_file": "game-root renodx-gtav-enhanced.addon64",
+    "wine_override_changes": "Per-game d3d12core=n,b merged with existing overrides; launcher retains its DXGI entry. No registry/prefix edits.",
+    "hdr10_default": "GTA addon calls SetUseHDR10(true); swapchain_v2 selects R10G10B10A2_UNORM + HDR10 ST2084. Internal cloned render resources can be FP16.",
+    "unverified": "Long-play stability, controlled performance, display calibration and HDR+FG compatibility are unqualified. Stock WSI and individual necessity of Mesa 26.3/private WSI have not been isolated.",
+    "gamescope_wsi": {
+      "enable_process_environment": {
+        "ENABLE_GAMESCOPE_WSI": "1"
+      },
+      "remove_process_environment": [
+        "DISABLE_GAMESCOPE_WSI"
+      ],
+      "profile": "MESA=26.3 WINEDLLOVERRIDES=\"d3d12core=n,b\" ../xess-xmx-community/gta-launch.sh --hdr %command% -nobattleye",
+      "private_install_relative_to_home": ".local/lib/oxp3-gamescope-wsi/3.16.25-event-queues-20261105",
+      "selection": "Private event-queue candidate retained in the successful Core-updated profile; individual necessity and stock-layer equivalence remain unproved.",
+      "validation": "R10/PQ Rec.2020 plus application HDR feedback; two short Story cold starts with XeSS SR after Core-only update. Earlier pre-Core cold starts were unreliable."
+    },
+    "game_directory_vkd3d": "Official vkd3d-proton 3.1 x64 d3d12core.dll only; retain original system32 d3d12.dll loader"
+  },
+  "status": "HDR plus XeSS SR working in two short Core-only vkd3d 3.1 Story cold-start tests; combined frame generation unresolved",
+  "scope": {
+    "game": "Grand Theft Auto V Enhanced",
+    "steam_appid": 3240220,
+    "mode": "Story Mode",
+    "existing_xess_runtime": "20261104; explicitly select its private Mesa 26.3.0-rc3 with MESA=26.3 for this HDR profile",
+    "existing_opti_proxy": "daniel-h-0/OptiScaler bc250-273e8d4, retained unchanged",
+    "frame_generation": "Off in game; OptiScaler Enabled=false, FGInput=nofg, FGOutput=nofg in the working HDR/SR profile",
+    "proton": "Original Proton Experimental system32 D3D12 loader retained; app-directory Core updated to official vkd3d-proton 3.1. No shared Proton/prefix replacement."
+  },
+  "validation": {
+    "startup": "Two short Story Mode cold starts succeeded with Core-only vkd3d 3.1, private Mesa 26.3 and private WSI candidate; not long-play qualification",
+    "actual_hdr": "ReShade/RenoDX initialized on D3D12; R10/PQ Rec.2020 and Gamescope application HDR feedback active",
+    "xeSS_SR_visual": "Fresh XeSS SR 2.0.2 initialization and Story gameplay confirmed; owner reported it works",
+    "HUD_map_phone": "Normal Story gameplay/HUD image observed with FG Off; earlier owner accepted HUD appearance. No new combined-FG HUD qualification",
+    "repeat_launch": "Second cold start reached Story after restoring FG Off",
+    "long_play": "Not qualified",
+    "hdr_plus_native_FSR_FG": "Owner reported artifacting/flickering after enabling in-game FSR FG during OptiScaler nofg control; restored Off",
+    "hdr_plus_xeFG": "Full-backbuffer trial failed SDK swapchain-destroy reference-count check. Source audit identifies wrapper teardown order; no patch runtime-qualified",
+    "performance": "Not benchmarked; no 2x, latency or pacing claim",
+    "causality_limit": "Core update includes exact upstream dropped-fence-registration fix; individual necessity of Mesa 26.3/private WSI and stock-layer behavior remain unproved",
+    "SDR_HUD_limit": "Accepted SDR DrawUIOverFG test predates this Core update; no post-Core SDR or HDR manual-composition qualification",
+    "kernel_health": "No GPU hang/reset found in earlier failed control; this does not establish complete startup or long-play reliability"
+  },
+  "licenses": {
+    "renodx": {
+      "license": "MIT",
+      "url": "https://github.com/clshortfuse/renodx/blob/bc0ead39917634e95c534f7e8cfb59ab82880747/LICENSE"
+    },
+    "reshade": {
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/crosire/reshade/blob/v6.8.0/LICENSE.md"
+    },
+    "gamescope": {
+      "license": "BSD-2-Clause with additional notices in upstream LICENSE",
+      "url": "https://github.com/ValveSoftware/gamescope/blob/17baf4abd1ab3353fb705e4d0d023f84e870f7e8/LICENSE"
+    },
+    "vkd3d_proton": {
+      "license": "LGPL-2.1-or-later",
+      "url": "https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/COPYING",
+      "retained_notices": "vkd3d/LICENSES/"
+    }
+  },
+  "gamescope_wsi": {
+    "upstream_repo": "https://github.com/ValveSoftware/gamescope",
+    "base_version": "3.16.25",
+    "base_commit": "17baf4abd1ab3353fb705e4d0d023f84e870f7e8",
+    "changes": "Private queues for WSI globals and swapchains, queue-specific dispatch/roundtrip, removal of extra blocking default-queue dispatch, and related object lifetime/retirement fixes adapted to 3.16.25 vkroots.",
+    "scope": "Private per-game layer; no system Gamescope package replacement",
+    "upstream_fix_references": [
+      "https://github.com/ValveSoftware/gamescope/commit/1e7a0bbca86f00157bbce464294a149125790c18",
+      "https://github.com/ValveSoftware/gamescope/commit/92363db5088393f62aebe43a050b5af26d792ea4",
+      "https://github.com/ValveSoftware/gamescope/commit/330b8c131589194206cdf645599099304748e56f",
+      "https://github.com/ValveSoftware/gamescope/commit/f61e0a44843f8b340749615d2f072651666e760d"
+    ],
+    "builder": "build-wsi-layer.py",
+    "patch": {
+      "path": "patches/0001-private-wayland-event-queues.patch",
+      "sha256": "e302bbb4d3173f7dd26f45b4894e81ee0c8b366a3d8f6a0b3bf70b96e54f94d2",
+      "modified_layer_sha256": "0117849fb0e52b0840a35a1f5249d468d76ce08474b743be396de910a436ab8e",
+      "method": "Manual old-vkroots-API backport of event-queue isolation, proxy ownership and teardown fixes; registry startup uses one private roundtrip rather than an initial blocking dispatch."
+    },
+    "build_guide": "BUILDING.md",
+    "source_manifest": "WSI-SOURCE.json",
+    "builder_note": "Commit-pinned source inputs and local patch verified; normal-user private build, no system package replacement.",
+    "qualification": "Backport candidate retained in current short-test HDR/SR success. Earlier candidate-only launches froze; no proved Wayland deadlock, necessity test or stock-layer comparison for this exact combination."
+  },
+  "reshade_overlay_defaults": {
+    "file": "game-root ReShade.ini",
+    "section": "OVERLAY",
+    "values": {
+      "TutorialProgress": 4,
+      "ShowFPS": 0,
+      "ShowClock": 0,
+      "ShowFrameTime": 0,
+      "ShowPresetName": 0,
+      "ShowScreenshotMessage": 0,
+      "ShowPresetTransitionMessage": 0
+    },
+    "validation": "No persistent tutorial reported during successful short gameplay; brief startup notice may still appear, and a frozen frame can retain it."
+  },
+  "experimental_frame_generation_trial": {
+    "status": "Unqualified: full-backbuffer HDR XeFG trial failed proxy-swapchain teardown with references in use; working profile restored FG Off",
+    "FrameGen.Enabled": true,
+    "FrameGen.FGInput": "fsrfg",
+    "FrameGen.FGOutput": "xefg",
+    "FrameGen.DisableHudless": true,
+    "FrameGen.DisableUI": true,
+    "XeFG.UIComposition": false,
+    "FrameGen.DrawUIOverFG": false,
+    "failure_stage": "GTA FFX FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12 replacement; wrapper called XeFG Destroy before releasing its underlying proxy reference",
+    "init_flag_control": "Initial InvertedDepth=true, JitteredMV=false, HighResMV=false already matched later GTA context; no supported flag workaround",
+    "source_audit": "Relevant FfxApi_Dx12_FG.cpp, wrapped_swapchain.cpp and IFGFeature_Dx12.cpp match installed OptiScaler commit273e8d4; source issue only, no runtime-qualified patch"
+  },
+  "vkd3d_core": {
+    "version": "3.1",
+    "source_commit": "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1",
+    "fence_fix_commit": "49a1e2c7098f4646374458b9a8fbc7c0d0b5ff3d",
+    "release_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/tag/v3.1",
+    "asset_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.1/vkd3d-proton-3.1.tar.zst",
+    "asset_sha256": "b85ea8219b71093a3924913dd7aae6172333dc0c069983ed510816d67f02120b",
+    "installed_member": "vkd3d-proton-3.1/x64/d3d12core.dll",
+    "core_sha256": "0dfd690a39ef8361ca3b64e9fd8e945b27d2c568dac5dc0dce1a45abf65914cc",
+    "deployment": "App-directory Core only; retain original prefix system32 d3d12.dll so ReShade device hooks remain active",
+    "inspected_original_loader_commit": "cae2e003bb8251627ff93c0f471ae18a28234490",
+    "compatibility_limit": "No source changes in inspected loader/Core private interface between these exact pins; recheck materially different loaders",
+    "installer": "vkd3d/install-vkd3d.py",
+    "guide": "vkd3d/README.md",
+    "source_manifest": "vkd3d/source-pins.json",
+    "rollback": "Checked original file/symlink/absent state; refuses to overwrite modified installed Core; DLL override removal is a separate manual step",
+    "pair_trial_limit": "An app-directory release DLL-pair control reached menu with HDR inactive because ReShade missed D3D12 device interception; not HDR success",
+    "qualification": "Original loader/new app Core mapping, RenoDX D3D12/HDR feedback and fresh XeSS SR established in two short Story cold starts; no long-play or FG claim"
+  }
+}

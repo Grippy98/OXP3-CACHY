@@ -51,7 +51,7 @@ The adapter stages a separate EFI application and prints one-time testing steps.
 
 ## Builds and experiments
 
-MangoHud telemetry, the complete accepted panel kernel/runtime, EDID kernel recovery and external VRR require source builds or explicit prebuilt inputs. The menu links their instructions rather than silently building or replacing the running graphics stack. In particular, external VRR is not a working 4K/HDR fix and is excluded from automatic installation.
+MangoHud telemetry, the complete accepted panel kernel/runtime, EDID kernel recovery and external VRR require source builds or explicit prebuilt inputs. The menu links their instructions rather than silently building or replacing the running graphics stack. In particular, external VRR is not a working 4K/HDR fix and is excluded from automatic installation. GTA HDR remains a manual profile: HDR with XeSS SR passed short tests after a per-game Core update, while HDR+FG remains unresolved. The separate GTA Core menu item installs/checks/rolls back only that DLL; it does not enable HDR or alter game/Steam settings. The HDR profile menu entry opens its instructions.
 
 ## Backups
 

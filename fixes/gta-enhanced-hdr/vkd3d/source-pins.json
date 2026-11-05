@@ -1,0 +1,28 @@
+{
+  "version": "3.1",
+  "source_commit": "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1",
+  "fix_commit": "49a1e2c7098f4646374458b9a8fbc7c0d0b5ff3d",
+  "release_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/tag/v3.1",
+  "asset_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.1/vkd3d-proton-3.1.tar.zst",
+  "asset_sha256": "b85ea8219b71093a3924913dd7aae6172333dc0c069983ed510816d67f02120b",
+  "files": {
+    "d3d12.dll": "502694a5fd5e06381ef2cdb33359c5948b6a012938902ddc9e9b381841bc0ce7",
+    "d3d12core.dll": "0dfd690a39ef8361ca3b64e9fd8e945b27d2c568dac5dc0dce1a45abf65914cc"
+  },
+  "verification": "upstream fix commit is ancestor of release; old dropped-event diagnostic absent from release Core DLL; AMD64 PE exports/imports inspected",
+  "previous_builds": {
+    "Proton_Experimental_11_20261027b": "cae2e003bb8251627ff93c0f471ae18a28234490",
+    "Proton_11_stable": "212991fc2c266bc0d59f4c4ce8f80f7126508d71"
+  },
+  "fix_merged_utc": "2026-10-27T16:15:49Z",
+  "release_published_utc": "2026-10-28T10:19:54Z",
+  "runtime_status": "Core-only method reached HDR/XeSS SR Story Mode on two short cold starts with private Mesa 26.3 and the private WSI candidate. Native FSR FG flickered; Intel XeFG failed a separate lifetime test. Long-play and stock-WSI equivalence unqualified.",
+  "preferred_deployment": {
+    "scope": "GTA V Enhanced with ReShade/RenoDX on inspected Proton Experimental",
+    "game_directory_files": [
+      "d3d12core.dll"
+    ],
+    "preserve_existing_loader_location": "Original d3d12.dll in prefix system32",
+    "compatibility_basis": "No source differences in libs/d3d12, libs/d3d12core, or include/vkd3d_core_interface.idl between cae2e003bb8251627ff93c0f471ae18a28234490 and release4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1"
+  }
+}
