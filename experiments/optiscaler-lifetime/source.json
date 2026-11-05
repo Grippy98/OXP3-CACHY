@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/daniel-h-0/OptiScaler",
+  "commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+  "patch_sha256": "ae9e0ad6bac6a8c7ada8cd5dfb73c71a78de48930025ee988bbfcbe8d5ee08ad",
+  "status": "Experimental lifetime-order diagnostic; not runtime-qualified. Forced external-reference release loops remain upstream behavior and are not fixed by this patch."
+}

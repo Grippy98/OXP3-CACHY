@@ -1,0 +1,77 @@
+diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
+index 492e5553..a043ee7a 100644
+--- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
++++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
+@@ -177,6 +177,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+         if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+         {
+             _swapChainContext = context;
++            return false;
+         }
+         else
+         {
+@@ -1645,10 +1646,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+     {
+         State::Instance().currentFGSwapchain = nullptr;
+ 
+-        if (_swapChainContext != nullptr)
+-            DestroySwapchainContext();
+-
+-        _swapChainContext = nullptr;
++        if (_swapChainContext != nullptr && !DestroySwapchainContext())
++        {
++            // The SDK still owns a live context; do not lose it or pretend teardown succeeded.
++            if (Config::Instance()->FGUseMutexForSwapchain.value_or_default())
++                Mutex.unlockThis(1);
++            return false;
++        }
+     }
+ 
+     ReleaseObjects();
+diff --git a/OptiScaler/wrapped/wrapped_swapchain.cpp b/OptiScaler/wrapped/wrapped_swapchain.cpp
+index dc700366..7a3fec98 100644
+--- a/OptiScaler/wrapped/wrapped_swapchain.cpp
++++ b/OptiScaler/wrapped/wrapped_swapchain.cpp
+@@ -701,16 +701,39 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
+             State::Instance().currentRealSwapchain = nullptr;
+ 
+         auto fg = State::Instance().currentFG;
+-        if (fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
++        const bool isXeFg = State::Instance().activeFgOutput == FGOutput::XeFG;
++        const bool releaseFg = fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr &&
++                               (!isXeFg || fg->Hwnd() == _handle);
++        const bool releaseXeFgProxyFirst = releaseFg && isXeFg;
++        ULONG refCount = 0;
++
++        if (releaseXeFgProxyFirst)
+         {
+             fg->Deactivate();
+-            fg->ReleaseSwapchain(_handle);
++            // The XeFG context can only be destroyed after our owned proxy reference is released.
++            // Clear the borrowed hook alias first so Release cannot recursively tear down this wrapper.
++            State::Instance().currentFGSwapchain = nullptr;
++            refCount = _real->Release();
++            _real = nullptr;
++        }
++
++        if (releaseFg)
++        {
++            if (!releaseXeFgProxyFirst)
++                fg->Deactivate();
++
++            if (!fg->ReleaseSwapchain(_handle))
++                LOG_WARN("FG swapchain teardown deferred; context remains alive");
+ 
+             if (State::Instance().currentFGSwapchain != nullptr)
+                 State::Instance().currentFGSwapchain = nullptr;
+         }
+ 
+-        auto refCount = _real->Release();
++        if (_real != nullptr)
++        {
++            refCount = _real->Release();
++            _real = nullptr;
++        }
+ 
+         // Disabled for now, cause issues with some games
+         /*

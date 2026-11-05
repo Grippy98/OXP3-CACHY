@@ -1,0 +1,50 @@
+name: Experimental OptiScaler XeFG lifetime build
+
+on:
+  push:
+    branches: [experimental/gta-xefg-lifetime-20261105]
+    paths:
+      - .github/workflows/optiscaler-lifetime.yml
+      - experiments/optiscaler-lifetime/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: optiscaler-lifetime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - name: Check out the source patch and build recipe
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Keep source line endings deterministic
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - name: Check out the exact OptiScaler base and pinned submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: daniel-h-0/OptiScaler
+          ref: 273e8d449763d0e9e051dee831dc42badcd15d00
+          path: optiscaler-source
+          submodules: recursive
+          persist-credentials: false
+      - name: Apply the isolated patch and build Release x64
+        shell: pwsh
+        run: >-
+          & ./experiments/optiscaler-lifetime/build.ps1
+          -SourceDir ./optiscaler-source
+          -ArtifactDir ./optiscaler-artifact
+      - name: Upload the experimental DLL and source provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: optiscaler-273e8d44-xefg-lifetime
+          path: optiscaler-artifact/
+          if-no-files-found: error
+          retention-days: 14
