@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/daniel-h-0/OptiScaler",
   "commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
-  "patch_sha256": "11440e0f5135ae711f8b1f2abe0f4faa9b9d9a5e692a4557b2b1b68fd73fd7a8",
-  "status": "Experimental GTA-only ReShade outer ownership/FFX lease diagnostic, with narrowly guarded opaque-HWND alpha descriptor normalization. Not built or runtime-qualified."
+  "patch_sha256": "9b81680ff963d5ae8eb1436323ba3c585584b0f81244a475720d6a67f2416ffa",
+  "status": "Experimental GTA ReShade outer reuse plus native Intel D3D12 SDK boundary diagnostic. Prior alpha build adopted correctly, then hit a native ExecuteCommandLists foreign-list CPU AV; this build is not yet compiled/runtime-qualified."
 }

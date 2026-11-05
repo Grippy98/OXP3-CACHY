@@ -1,5 +1,5 @@
 diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
-index 492e5553..9b388e65 100644
+index 492e5553..6557c7aa 100644
 --- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
 +++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
 @@ -5,6 +5,7 @@
@@ -10,7 +10,88 @@ index 492e5553..9b388e65 100644
  #include <resource_tracking/ResTrack_dx12.h>
  
  #include <magic_enum.hpp>
-@@ -166,6 +167,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -12,6 +13,7 @@
+ #include <DirectXMath.h>
+ 
+ using namespace DirectX;
++using Microsoft::WRL::ComPtr;
+ 
+ void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_level_t level, void* userData)
+ {
+@@ -48,19 +50,27 @@ int XeFG_Dx12::QueryMaxInterpolationCount(ID3D12Device* device)
+     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+ #endif // !DONT_USE_XMX
+ 
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(device);
++    if (nativeDevice == nullptr) return 0;
+     xefg_swapchain_handle_t context = nullptr;
+-    auto result = XeFGProxy::D3D12CreateContext()(device, &context);
++    auto result = XeFGProxy::D3D12CreateContext()(nativeDevice.Get(), &context);
+ 
+     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+     {
+         LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
++        if (context != nullptr) nativeDevice.Detach(); // unexpected partial live SDK context
+         return 0;
+     }
+ 
+     // Only maxSupportedInterpolations is reported before swapchain init
+     xefg_swapchain_properties_t props {};
+     result = XeFGProxy::GetProperties()(context, &props);
+-    XeFGProxy::Destroy()(context);
++    if (XeFGProxy::Destroy()(context) != XEFG_SWAPCHAIN_RESULT_SUCCESS)
++    {
++        // A still-live SDK context must not lose our owned native input reference.
++        nativeDevice.Detach();
++        LOG_ERROR("XeFG capability context destroy failed; native device reference retained");
++    }
+ 
+     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+     {
+@@ -80,6 +90,19 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+         return false;
+     }
+ 
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(device);
++    if (nativeDevice == nullptr)
++    {
++        LOG_ERROR("XeFG native device boundary rejected unsupported/cyclic device proxy");
++        return false;
++    }
++    if (_swapChainContext != nullptr)
++    {
++        LOG_ERROR("XeFG native device boundary refuses to overwrite a live SDK context");
++        return false;
++    }
++    _sdkDevice = nativeDevice;
++    LOG_INFO("XeFG native device boundary: input {:X}, native {:X}", (size_t)device, (size_t)_sdkDevice.Get());
+     auto createResult = false;
+ 
+ #ifndef DONT_USE_XMX
+@@ -88,11 +111,12 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+ 
+     do
+     {
+-        auto result = XeFGProxy::D3D12CreateContext()(device, &_swapChainContext);
++        auto result = XeFGProxy::D3D12CreateContext()(_sdkDevice.Get(), &_swapChainContext);
+ 
+         if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+         {
+             LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
++            if (_swapChainContext == nullptr) _sdkDevice.Reset();
+             return false;
+         }
+ 
+@@ -107,7 +131,7 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+ 
+         // XeFG reads the frames of the XeLL context it gets: the XeLL output's, or its own next to a Reflex or
+         // AntiLag 2 output. Either stays valid until this context is destroyed.
+-        if (auto xellContext = InputCommon::acquire_xefg_xell(device); xellContext != nullptr)
++        if (auto xellContext = InputCommon::acquire_xefg_xell(_sdkDevice.Get()); xellContext != nullptr)
+         {
+             result = XeFGProxy::SetLatencyReduction()(_swapChainContext, xellContext);
+ 
+@@ -166,6 +190,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
  
      if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
      {
@@ -18,7 +99,7 @@ index 492e5553..9b388e65 100644
          auto context = _swapChainContext;
          _swapChainContext = nullptr;
  
-@@ -177,6 +179,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -177,6 +202,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
          if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
          {
              _swapChainContext = context;
@@ -26,7 +107,311 @@ index 492e5553..9b388e65 100644
          }
          else
          {
-@@ -1645,10 +1648,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+@@ -184,12 +210,38 @@ bool XeFG_Dx12::DestroySwapchainContext()
+ 
+             // Its XeLL context isn't read anymore
+             InputCommon::release_xefg_xell();
++            _gameCommandQueue = nullptr;
++            _sdkGameQueue.Reset();
++            _sdkDevice.Reset();
+         }
+     }
+ 
+     return true;
+ }
+ 
++bool XeFG_Dx12::SetNativeSdkQueue(ID3D12CommandQueue* queue)
++{
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(queue);
++    if (nativeQueue == nullptr || _sdkDevice == nullptr ||
++        !XeFGNative::MatchesDevice(nativeQueue.Get(), _sdkDevice.Get()) ||
++        nativeQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
++    {
++        LOG_ERROR("XeFG native queue boundary rejected queue/device identity or non-direct queue");
++        return false;
++    }
++    if (_swapChainContext != nullptr && _sdkGameQueue != nullptr &&
++        !XeFGNative::SameIdentity(nativeQueue.Get(), _sdkGameQueue.Get()))
++    {
++        LOG_ERROR("XeFG native queue boundary refuses to replace a live SDK context's presentation queue");
++        return false;
++    }
++    LOG_INFO("XeFG native queue boundary: input {:X}, native {:X}, native device {:X}",
++             (size_t)queue, (size_t)nativeQueue.Get(), (size_t)_sdkDevice.Get());
++    _sdkGameQueue = std::move(nativeQueue);
++    _gameCommandQueue = _sdkGameQueue.Get();
++    return true;
++}
++
+ xefg_swapchain_d3d12_resource_data_t XeFG_Dx12::GetResourceData(FG_ResourceType type, int index)
+ {
+     if (index < 0)
+@@ -252,7 +304,8 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+         if (State::Instance().currentD3D12Device == nullptr)
+             return false;
+ 
+-        CreateSwapchainContext(State::Instance().currentD3D12Device);
++        if (!CreateSwapchainContext(State::Instance().currentD3D12Device))
++            return false;
+ 
+         if (_swapChainContext == nullptr)
+             return false;
+@@ -274,14 +327,12 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+     }
+ 
+     IDXGIFactory* realFactory = nullptr;
+-    ID3D12CommandQueue* realQueue = nullptr;
++    if (!SetNativeSdkQueue(cmdQueue)) return false;
++    auto realQueue = _sdkGameQueue.Get();
+ 
+     if (!CheckForRealObject(__FUNCTION__, factory, (IUnknown**) &realFactory))
+         realFactory = factory;
+ 
+-    if (!CheckForRealObject(__FUNCTION__, cmdQueue, (IUnknown**) &realQueue))
+-        realQueue = cmdQueue;
+-
+     IDXGIFactory2* factory12 = nullptr;
+     if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
+         return false;
+@@ -419,7 +470,8 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+         if (State::Instance().currentD3D12Device == nullptr)
+             return false;
+ 
+-        CreateSwapchainContext(State::Instance().currentD3D12Device);
++        if (!CreateSwapchainContext(State::Instance().currentD3D12Device))
++            return false;
+ 
+         if (_swapChainContext == nullptr)
+             return false;
+@@ -441,14 +493,12 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+     }
+ 
+     IDXGIFactory* realFactory = nullptr;
+-    ID3D12CommandQueue* realQueue = nullptr;
++    if (!SetNativeSdkQueue(cmdQueue)) return false;
++    auto realQueue = _sdkGameQueue.Get();
+ 
+     if (!CheckForRealObject(__FUNCTION__, factory, (IUnknown**) &realFactory))
+         realFactory = factory;
+ 
+-    if (!CheckForRealObject(__FUNCTION__, cmdQueue, (IUnknown**) &realQueue))
+-        realQueue = cmdQueue;
+-
+     IDXGIFactory2* factory12 = nullptr;
+     if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
+         return false;
+@@ -547,8 +597,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+ {
+     LOG_DEBUG("");
+ 
+-    _device = device;
+     CreateObjects(device);
++    if (!_nativeObjectsReady)
++    {
++        LOG_ERROR("XeFG FG context creation rejected incomplete/foreign native helper objects");
++        return;
++    }
+ 
+     if (_fgContext == nullptr && _swapChainContext != nullptr)
+     {
+@@ -568,6 +622,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+ void XeFG_Dx12::Activate()
+ {
+     LOG_DEBUG("");
++    if (!_nativeObjectsReady)
++    {
++        LOG_ERROR("XeFG activation rejected because native helper objects are not ready");
++        return;
++    }
++
+ 
+     auto currentFeature = State::Instance().currentFeature;
+     bool nativeAA = false;
+@@ -659,7 +719,7 @@ bool XeFG_Dx12::Shutdown()
+     ReleaseObjects();
+ 
+     if (_swapChainContext != nullptr)
+-        DestroySwapchainContext();
++        return DestroySwapchainContext();
+ 
+     return true;
+ }
+@@ -984,7 +1044,18 @@ void* XeFG_Dx12::FrameGenerationContext() { return _fgContext; }
+ 
+ void* XeFG_Dx12::SwapchainContext() { return _swapChainContext; }
+ 
+-XeFG_Dx12::~XeFG_Dx12() { Shutdown(); }
++XeFG_Dx12::~XeFG_Dx12()
++{
++    Shutdown();
++    if (_swapChainContext != nullptr)
++    {
++        // Diagnostic fail-safe: the SDK context is still live. Keep its input
++        // references until process teardown rather than releasing them underneath it.
++        _sdkDevice.Detach();
++        _sdkGameQueue.Detach();
++        LOG_ERROR("XeFG owner destroyed with a live SDK context; native inputs retained until process exit");
++    }
++}
+ 
+ bool XeFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
+ 
+@@ -1090,6 +1161,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
+ 
+ void XeFG_Dx12::ReleaseObjects()
+ {
++    _nativeObjectsReady = false;
++    _nativeObjectsInitialized = false;
+     for (size_t i = 0; i < BUFFER_COUNT; i++)
+     {
+         SAFE_RELEASE(_uiCommandAllocator[i]);
+@@ -1112,23 +1185,46 @@ void XeFG_Dx12::ReleaseObjects()
+     _depthInvert.reset();
+ 
+     ReleaseResourceCopies();
++    _helperGameQueue.Reset();
++    _gameCommandQueue = _sdkGameQueue.Get();
++    _device = nullptr;
++    _helperDevice.Reset();
+ }
+ 
+ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+ {
+-    _device = InDevice;
+-
++    _nativeObjectsReady = false;
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(InDevice);
++    if (nativeDevice == nullptr || (_sdkDevice != nullptr &&
++        !XeFGNative::SameIdentity(nativeDevice.Get(), _sdkDevice.Get())) ||
++        (_helperDevice != nullptr && !XeFGNative::SameIdentity(nativeDevice.Get(), _helperDevice.Get())))
++    {
++        LOG_ERROR("XeFG helper creation rejected a different/unsupported native device");
++        return;
++    }
++    _helperDevice = std::move(nativeDevice);
++    _device = _helperDevice.Get();
++    InDevice = _device;
++    const auto helpersComplete = [this]()
++    {
++        for (size_t i = 0; i < BUFFER_COUNT; ++i)
++            if (_uiCommandAllocator[i] == nullptr || _uiCommandList[i] == nullptr ||
++                _scCommandAllocator[i] == nullptr || _scCommandList[i] == nullptr)
++                return false;
++        return _uiFence != nullptr && _uiFenceEvent != nullptr && _scFence != nullptr && _scFenceEvent != nullptr;
++    };
+     if (_uiCommandAllocator[0] != nullptr)
++    {
++        _nativeObjectsReady = _nativeObjectsInitialized && helpersComplete();
+         return;
++    }
+ 
+     LOG_DEBUG("");
++    size_t initialized = 0;
+ 
+     do
+     {
+         HRESULT result;
+-        ID3D12CommandAllocator* allocator = nullptr;
+-        ID3D12GraphicsCommandList* cmdList = nullptr;
+-        ID3D12CommandQueue* cmdQueue = nullptr;
+ 
+         // FG
+         for (size_t i = 0; i < BUFFER_COUNT; i++)
+@@ -1149,8 +1245,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+             }
+ 
+             _uiCommandAllocator[i]->SetName(std::format(L"_uiCommandAllocator[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _uiCommandAllocator[i], (IUnknown**) &allocator))
+-                _uiCommandAllocator[i] = allocator;
+ 
+             result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _uiCommandAllocator[i], NULL,
+                                                  IID_PPV_ARGS(&_uiCommandList[i]));
+@@ -1160,8 +1254,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                 break;
+             }
+             _uiCommandList[i]->SetName(std::format(L"_uiCommandList[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _uiCommandList[i], (IUnknown**) &cmdList))
+-                _uiCommandList[i] = cmdList;
+ 
+             result = _uiCommandList[i]->Close();
+             if (result != S_OK)
+@@ -1199,8 +1291,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+             }
+ 
+             _scCommandAllocator[i]->SetName(std::format(L"_scCommandAllocator[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _scCommandAllocator[i], (IUnknown**) &allocator))
+-                _scCommandAllocator[i] = allocator;
+ 
+             result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _scCommandAllocator[i], NULL,
+                                                  IID_PPV_ARGS(&_scCommandList[i]));
+@@ -1210,8 +1300,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                 break;
+             }
+             _scCommandList[i]->SetName(std::format(L"_scCommandList[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _scCommandList[i], (IUnknown**) &cmdList))
+-                _scCommandList[i] = cmdList;
+ 
+             result = _scCommandList[i]->Close();
+             if (result != S_OK)
+@@ -1239,9 +1327,12 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                     break;
+                 }
+             }
++            ++initialized;
+         }
+ 
+     } while (false);
++    _nativeObjectsInitialized = initialized == BUFFER_COUNT;
++    _nativeObjectsReady = _nativeObjectsInitialized && helpersComplete();
+ }
+ 
+ bool XeFG_Dx12::Present()
+@@ -1584,8 +1675,23 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+             (XeFGProxy::SetUiCompositionState() != nullptr || Config::Instance()->FGDrawUIOverFG.value_or_default()))
+         {
+             auto frameId = static_cast<uint32_t>(_frameCount - indexDiff);
++            ComPtr<ID3D12CommandList> nativeCommandList;
++            auto sdkCommandList = static_cast<ID3D12CommandList*>(fResource->cmdList);
++            // Old SDK compatibility uses literal 1 as an ignored command-list argument.
++            // It is not a COM object and must never be queried/unwrapped.
++            if (sdkCommandList != nullptr && reinterpret_cast<uintptr_t>(sdkCommandList) != 1)
++            {
++                nativeCommandList = XeFGNative::Unwrap<ID3D12CommandList>(sdkCommandList);
++                if (nativeCommandList == nullptr ||
++                    !XeFGNative::MatchesDevice(nativeCommandList.Get(), _sdkDevice.Get()))
++                {
++                    LOG_ERROR("XeFG resource tag rejected a foreign command-list/device identity");
++                    return false;
++                }
++                sdkCommandList = nativeCommandList.Get();
++            }
+             auto result =
+-                XeFGProxy::D3D12TagFrameResource()(_swapChainContext, fResource->cmdList, frameId, &resourceParam);
++                XeFGProxy::D3D12TagFrameResource()(_swapChainContext, sdkCommandList, frameId, &resourceParam);
+             LOG_DEBUG("D3D12TagFrameResource, frameId: {}, type: {} result: {} ({})", frameId,
+                       magic_enum::enum_name(type), magic_enum::enum_name(result), (int32_t) result);
+ 
+@@ -1614,7 +1720,18 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+     return true;
+ }
+ 
+-void XeFG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) { _gameCommandQueue = queue; }
++void XeFG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue)
++{
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(queue);
++    if (nativeQueue == nullptr || !XeFGNative::MatchesDevice(nativeQueue.Get(), _sdkDevice.Get()))
++    {
++        LOG_ERROR("XeFG command queue update rejected foreign device; previous owned queue retained");
++        return;
++    }
++    // Resource-work queue updates must not drop the initial SDK presentation queue's lifetime reference.
++    _helperGameQueue = std::move(nativeQueue);
++    _gameCommandQueue = _helperGameQueue.Get();
++}
+ 
+ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+ {
+@@ -1645,10 +1762,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
      {
          State::Instance().currentFGSwapchain = nullptr;
  
@@ -44,6 +429,99 @@ index 492e5553..9b388e65 100644
      }
  
      ReleaseObjects();
+diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.h b/OptiScaler/framegen/xefg/XeFG_Dx12.h
+index 93f004a2..2e67b5e1 100644
+--- a/OptiScaler/framegen/xefg/XeFG_Dx12.h
++++ b/OptiScaler/framegen/xefg/XeFG_Dx12.h
+@@ -7,6 +7,7 @@
+ 
+ #include "shaders/depth_invert/DI_Dx12.h"
+ #include "XeFG_DynamicMFG.h"
++#include "XeFG_NativeD3D12.h"
+ 
+ #include <xell.h>
+ #include <xell_d3d12.h>
+@@ -19,6 +20,14 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
+   private:
+     xefg_swapchain_handle_t _swapChainContext = nullptr;
+     xefg_swapchain_handle_t _fgContext = nullptr;
++    // These references outlive SDK use, including a failed Destroy call.
++    Microsoft::WRL::ComPtr<ID3D12Device> _sdkDevice;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _sdkGameQueue;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _helperGameQueue;
++    Microsoft::WRL::ComPtr<ID3D12Device> _helperDevice;
++    bool _nativeObjectsReady = false;
++    bool _nativeObjectsInitialized = false;
++    bool SetNativeSdkQueue(ID3D12CommandQueue* queue);
+ 
+     uint32_t _width = 0;
+     uint32_t _height = 0;
+diff --git a/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h b/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h
+new file mode 100644
+index 00000000..f114ffcb
+--- /dev/null
++++ b/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h
+@@ -0,0 +1,60 @@
++#pragma once
++
++#include <d3d12.h>
++#include <wrl/client.h>
++#include <array>
++#include <cstdint>
++#include <utility>
++
++// Intel SDK inputs only. Never use this helper on the game's presentation chain
++// or overwrite State's application-facing objects with the returned interfaces.
++namespace XeFGNative
++{
++using Microsoft::WRL::ComPtr;
++inline constexpr GUID ReShadeUnwrapped = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++inline constexpr GUID StreamlineUnwrapped = {0xadec44e2, 0x61f0, 0x45c3, {0xad,0x9f,0x1b,0x37,0x37,0x92,0x84,0xff}};
++
++template <typename T> ComPtr<T> Unwrap(IUnknown* object)
++{
++    if (reinterpret_cast<uintptr_t>(object) <= 0xffff) return {}; // null/legacy SDK sentinel, never QI it
++    ComPtr<IUnknown> current = object;
++    std::array<IUnknown*, 8> visited {};
++    for (size_t depth = 0; depth < visited.size(); ++depth)
++    {
++        visited[depth] = current.Get();
++        ComPtr<IUnknown> next;
++        if (FAILED(current->QueryInterface(ReShadeUnwrapped, (void**)next.GetAddressOf())) || next == nullptr)
++        {
++            next.Reset();
++            current->QueryInterface(StreamlineUnwrapped, (void**)next.GetAddressOf());
++        }
++        if (next == nullptr || next.Get() == current.Get())
++        {
++            ComPtr<T> typed;
++            current.As(&typed);
++            return typed; // owns QI reference; never returns a released borrowed pointer
++        }
++        for (size_t previous = 0; previous <= depth; ++previous)
++            if (visited[previous] == next.Get()) return {}; // cyclic proxy chain
++        current = std::move(next);
++    }
++    return {}; // over-deep proxy chain
++}
++
++inline bool SameIdentity(IUnknown* first, IUnknown* second)
++{
++    if (first == nullptr || second == nullptr) return false;
++    ComPtr<IUnknown> a, b;
++    return SUCCEEDED(first->QueryInterface(IID_PPV_ARGS(a.GetAddressOf()))) &&
++        SUCCEEDED(second->QueryInterface(IID_PPV_ARGS(b.GetAddressOf()))) && a.Get() == b.Get();
++}
++
++inline bool MatchesDevice(ID3D12DeviceChild* child, ID3D12Device* device)
++{
++    if (child == nullptr || device == nullptr) return false;
++    ComPtr<ID3D12Device> parent;
++    if (FAILED(child->GetDevice(IID_PPV_ARGS(parent.GetAddressOf())))) return false;
++    auto nativeParent = Unwrap<ID3D12Device>(parent.Get());
++    return SameIdentity(nativeParent.Get(), device);
++}
++} // namespace XeFGNative
 diff --git a/OptiScaler/hooks/FG_Hooks.cpp b/OptiScaler/hooks/FG_Hooks.cpp
 index a60e1bc6..a5220ac6 100644
 --- a/OptiScaler/hooks/FG_Hooks.cpp
@@ -653,3 +1131,101 @@ index cff0d085..4c966472 100644
      if (desc == nullptr || context == nullptr)
          return FFX_API_RETURN_ERROR_PARAMETER;
  
+diff --git a/OptiScaler/low_latency/input/input_xell.cpp b/OptiScaler/low_latency/input/input_xell.cpp
+index 41384d05..92e561d1 100644
+--- a/OptiScaler/low_latency/input/input_xell.cpp
++++ b/OptiScaler/low_latency/input/input_xell.cpp
+@@ -148,6 +148,14 @@ xell_result_t InputXeLL::DestroyContext(xell_input_handle_t context)
+     if (!context)
+         return XELL_RESULT_ERROR_INVALID_CONTEXT;
+ 
++    if (context->inputContext.localContext && context->real != nullptr)
++    {
++        const auto result = XeLLProxy::RealDestroyContext()(context->real);
++        if (result != XELL_RESULT_SUCCESS)
++            return result; // keep local wrapper and its owner's native device reference alive
++        context->real = nullptr;
++    }
++
+     auto expected = context;
+     gameContext.compare_exchange_strong(expected, nullptr);
+     RemoveContext(context);
+diff --git a/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp b/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
+index 2cc70b1e..74855291 100644
+--- a/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
++++ b/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
+@@ -44,22 +44,33 @@ bool XeLL::init(IUnknown* pDevice)
+         return false;
+     }
+ 
+-    ID3D12Device* dx12_pDevice = nullptr;
+-    HRESULT hr = pDevice->QueryInterface(__uuidof(ID3D12Device), reinterpret_cast<void**>(&dx12_pDevice));
+-    if (hr != S_OK)
++    if (xell_context != nullptr)
++    {
++        LOG_ERROR("XeLL initialization refuses to overwrite a live SDK context");
+         return false;
++    }
++    auto device = XeFGNative::Unwrap<ID3D12Device>(pDevice);
++    if (device == nullptr) return false;
+ 
+-    // Created as OptiScaler's own, it goes straight to the real XeLL. Opti's XeFG gets it too.
+-    auto result = InputXeLL::D3D12CreateLocalContext(dx12_pDevice, (InputXeLL::xell_input_handle_t*) &xell_context) ==
++    // Only OptiScaler's own XeLL output is normalized here, so an already-active
++    // output reused by XeFG also has a native device. Game input objects are unchanged.
++    auto result = InputXeLL::D3D12CreateLocalContext(device.Get(), (InputXeLL::xell_input_handle_t*) &xell_context) ==
+                   XELL_RESULT_SUCCESS;
+-
++    if (result || xell_context != nullptr) native_device = std::move(device);
+     return result;
+ }
+ 
+ void XeLL::deinit()
+ {
+-    o_xellDestroyContext(xell_context);
+-    LOG_INFO("XeLL deinitialized");
++    if (xell_context == nullptr) return;
++    const auto result = o_xellDestroyContext(xell_context);
++    if (result == XELL_RESULT_SUCCESS)
++    {
++        xell_context = nullptr;
++        native_device.Reset();
++        LOG_INFO("XeLL deinitialized");
++    }
++    else LOG_ERROR("XeLL destroy failed; native device reference retained: {}", (UINT)result);
+ }
+ 
+ void* XeLL::get_tech_context() { return xell_context; }
+diff --git a/OptiScaler/low_latency/low_latency_tech/ll_xell.h b/OptiScaler/low_latency/low_latency_tech/ll_xell.h
+index 6890d93e..34e29c5e 100644
+--- a/OptiScaler/low_latency/low_latency_tech/ll_xell.h
++++ b/OptiScaler/low_latency/low_latency_tech/ll_xell.h
+@@ -6,6 +6,7 @@
+ #include "low_latency/input/input_xell.h"
+ #include <proxies/XeLL_Proxy.h>
+ #include "freefg_frame_pacer.h"
++#include <framegen/xefg/XeFG_NativeD3D12.h>
+ 
+ class XeLL : public LowLatencyTech
+ {
+@@ -14,6 +15,7 @@ class XeLL : public LowLatencyTech
+     uint64_t sleep_last_id {};
+ 
+     xell_context_handle_t xell_context {};
++    Microsoft::WRL::ComPtr<ID3D12Device> native_device;
+ 
+     // The sleep mode last sent to this context, the first one always goes out
+     uint32_t last_low_latency_mode = UINT32_MAX;
+@@ -55,6 +57,12 @@ class XeLL : public LowLatencyTech
+         }
+     }
+ 
++    ~XeLL() override
++    {
++        if (xell_context != nullptr)
++            native_device.Detach(); // failed/missing SDK destroy: retain its input until process teardown
++    }
++
+     // From LowLatencyTech
+     bool init(IUnknown* pDevice) override;
+     void deinit() override;

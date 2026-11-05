@@ -121,3 +121,61 @@ to the opaque presentation case observed here.
 - [vkd3d-proton 3.1 Vulkan opaque composite alpha](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/swapchain.c)
 - [Microsoft alpha enum semantics](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ne-dxgi1_2-dxgi_alpha_mode)
 - [Microsoft composition texture alpha normalization](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiontexture-setalphamode)
+
+## Native Intel D3D12 boundary follow-up
+
+The alpha-adjusted reuse build successfully captured and adopted the actual
+ReShade outer. HWND, queue, descriptors and native opaque-alpha validation passed;
+there was no swapchain recreation or SDK pointer-in-use teardown failure. Intel
+SetEnabled then succeeded. The game subsequently hit a **CPU access violation**
+in official vkd3d-proton 3.1's ID3D12CommandQueue::ExecuteCommandLists path, reached
+from libxess_fg Present. No GPU reset/hang was recorded in that failure window.
+This was a later failure; it does not invalidate the observed adoption success.
+
+The native command queue checks command-list implementation vtables. The fault
+corresponds to dereferencing a rejected/foreign list in its query-reset hazard
+check. Saved creation metadata also identifies the XeFG initialization device as
+ReShade's device proxy, while the factory path can provide a native presenting
+queue. Thus a mixed proxy/native D3D12 graph is the targeted compatibility
+hypothesis. The exact submitted foreign list was not inspected from live memory,
+so this remains an inference supported by the stack and object-creation metadata.
+
+This source follow-up adds a typed, owned COM unwrap helper for **Intel SDK
+inputs**, recursively supporting current ReShade and Streamline interfaces with
+cycle/depth guards. It does not replace global State objects or unwrap the game's
+ReShade outer swapchain. The previous capture/reuse and alpha guards remain.
+
+XeFG initialization owns its native device and initial direct presentation queue
+until SDK destruction succeeds. Queue.GetDevice must have the same canonical
+native device identity. Reinitializing a live context with a different queue is
+rejected; later resource-work queue updates own their own reference without
+dropping the original SDK queue lease. XeFG helper allocators, lists, fences and
+copy helpers use a separately retained native device; old borrowed-pointer
+substitutions are removed. Helper readiness gates context activation and includes
+successful creation/Close of every command list.
+
+Game-supplied command-list pointers remain untouched. A temporary owned native
+interface is used only during the SDK resource-tag call and must match the SDK
+device. The preexisting ignored literal-1 argument for backbuffer/legacy SDK tags
+is never queried as a COM object. OptiScaler's own XeLL output contexts also start
+with an owned native device, so a previously initialized output reused by XeFG
+has a consistent graph. The game's XeLL input objects remain unchanged. For local
+XeLL contexts only, the real SDK destruction error now propagates before deleting
+the wrapper, making device-reference retention accurate.
+
+Failed SDK destruction retains its context input references. If an owner is
+subsequently destroyed with a still-live SDK context, this diagnostic deliberately
+retains those references until process exit instead of releasing them underneath
+the SDK. It does not implement general recovery from failed SDK destruction.
+
+The helper passed compile-only checks with instantiated device, queue and command
+list types against the existing Windows cross-toolchain headers. Full MSVC CI and
+a new HDR/XeSS/XeFG runtime canary are still required. A useful canary additionally
+shows native-device and validated native-queue boundary logs, successful adoption,
+HDR remaining active, successful resource tagging, and SDK present status with
+multiple presented frames. No generated-frame or visual success is claimed yet.
+
+- [Intel SDK 3.0.2 native D3D12 object compatibility notes](https://github.com/intel/xess/releases/tag/v3.0.2)
+- [ReShade 6.8 device unwrap and proxy allocations](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_device.cpp)
+- [ReShade 6.8 queue unwraps lists before native submission](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_command_queue.cpp)
+- [vkd3d-proton 3.1 native command-list checks and query-reset submission](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/command.c)
