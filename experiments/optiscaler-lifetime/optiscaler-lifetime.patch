@@ -275,7 +275,7 @@ index 6da5b766..2e263234 100644
 +    VALIDATE_MEMBER_HOOK(hkFGSetPrivateData, PFN_SetPrivateData)
  };
 diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
-index b303eebd..2ec4ebfe 100644
+index b303eebd..1fcf4a78 100644
 --- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
 +++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
 @@ -4,6 +4,11 @@
@@ -290,7 +290,7 @@ index b303eebd..2ec4ebfe 100644
  #include <misc/DeferredRelease.h>
  
  #include <magic_enum.hpp>
-@@ -64,6 +69,172 @@ struct ffxDispatchDescFrameGenerationPrepareV2
+@@ -64,6 +69,198 @@ struct ffxDispatchDescFrameGenerationPrepareV2
      float cameraForward[3];  ///< The camera forward normalized vector in world space
  };
  
@@ -350,7 +350,33 @@ index b303eebd..2ec4ebfe 100644
 +        uint64_t(a.Numerator) * b.Denominator == uint64_t(b.Numerator) * a.Denominator;
 +}
 +
-+bool SameVisibleDesc(const DXGI_SWAP_CHAIN_DESC1& requested, const DXGI_SWAP_CHAIN_DESC1& actual, HWND hwnd)
++// ReShade reconstructs a modified HWND DESC1 from legacy _orig_desc and loses
++// AlphaMode, returning UNSPECIFIED even for the game's opaque IGNORE chain.
++// Normalize only that one-way pair for a non-layered/non-composition HWND, and
++// confirm the native SDK chain itself has no explicit transparency semantics.
++bool SameOpaqueHwndAlpha(DXGI_ALPHA_MODE requested, DXGI_ALPHA_MODE visible, HWND hwnd, IDXGISwapChain* sdk)
++{
++    if (requested == visible) return true;
++    if (requested != DXGI_ALPHA_MODE_IGNORE || visible != DXGI_ALPHA_MODE_UNSPECIFIED || !IsWindow(hwnd))
++        return false;
++    SetLastError(ERROR_SUCCESS);
++    const auto exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
++    if ((exStyle == 0 && GetLastError() != ERROR_SUCCESS) ||
++        (exStyle & (WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP)) != 0)
++        return false;
++    ComPtr<IDXGISwapChain1> native;
++    DXGI_SWAP_CHAIN_DESC1 nativeDesc {};
++    HWND nativeHwnd = nullptr;
++    if (sdk == nullptr || FAILED(sdk->QueryInterface(IID_PPV_ARGS(native.GetAddressOf()))) ||
++        FAILED(native->GetHwnd(&nativeHwnd)) || nativeHwnd != hwnd || FAILED(native->GetDesc1(&nativeDesc)) ||
++        (nativeDesc.AlphaMode != DXGI_ALPHA_MODE_IGNORE && nativeDesc.AlphaMode != DXGI_ALPHA_MODE_UNSPECIFIED))
++        return false;
++    LOG_DEBUG("GTA opaque HWND alpha normalized: requested IGNORE, ReShade UNSPECIFIED, native={}",
++              (UINT)nativeDesc.AlphaMode);
++    return true;
++}
++
++bool SameVisibleDesc(const DXGI_SWAP_CHAIN_DESC1& requested, const DXGI_SWAP_CHAIN_DESC1& actual, HWND hwnd, IDXGISwapChain* sdk)
 +{
 +    UINT width = requested.Width, height = requested.Height;
 +    if (width == 0 || height == 0)
@@ -364,7 +390,7 @@ index b303eebd..2ec4ebfe 100644
 +        requested.Stereo == actual.Stereo && requested.SampleDesc.Count == actual.SampleDesc.Count &&
 +        requested.SampleDesc.Quality == actual.SampleDesc.Quality && requested.BufferUsage == actual.BufferUsage &&
 +        requested.BufferCount == actual.BufferCount && requested.Scaling == actual.Scaling &&
-+        requested.SwapEffect == actual.SwapEffect && requested.AlphaMode == actual.AlphaMode && requested.Flags == actual.Flags;
++        requested.SwapEffect == actual.SwapEffect && SameOpaqueHwndAlpha(requested.AlphaMode, actual.AlphaMode, hwnd, sdk) && requested.Flags == actual.Flags;
 +    if (!same)
 +        LOG_WARN("GTA adoption descriptor mismatch req={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}; visible={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}",
 +            width, height, (UINT)requested.Format, requested.Stereo, requested.SampleDesc.Count, requested.SampleDesc.Quality,
@@ -422,7 +448,7 @@ index b303eebd..2ec4ebfe 100644
 +        FAILED(lease->visible->GetDesc1(&actual)) || FAILED(lease->visible->GetDesc(&original)))
 +        return reject("unable to query API-visible descriptor");
 +    // ReShade preserves the application's descriptor before RenoDX upgrades its native HDR format.
-+    if (!SameVisibleDesc(requested, actual, hwnd)) return reject("API-visible descriptors differ");
++    if (!SameVisibleDesc(requested, actual, hwnd, sdk)) return reject("API-visible descriptors differ");
 +    const bool wantsWindowed = fullscreen == nullptr || fullscreen->Windowed;
 +    if (bool(original.Windowed) != wantsWindowed) return reject("fullscreen/windowed mode differs");
 +    if (!wantsWindowed)
@@ -463,7 +489,7 @@ index b303eebd..2ec4ebfe 100644
  static ID3D12Device* _device = nullptr;
  static FG_Constants _fgConst {};
  
-@@ -339,6 +510,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+@@ -339,6 +536,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
      {
          auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainNewDX12*) desc;
  
@@ -492,7 +518,7 @@ index b303eebd..2ec4ebfe 100644
          if (State::Instance().currentWrappedSwapchain != nullptr &&
              State::Instance().currentSwapchainDesc.OutputWindow == cDesc->desc->OutputWindow)
          {
-@@ -381,6 +574,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+@@ -381,6 +600,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
      {
          auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*) desc;
  
@@ -504,7 +530,7 @@ index b303eebd..2ec4ebfe 100644
          IDXGIFactory2* factory = nullptr;
          auto scResult = cDesc->dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
  
-@@ -439,6 +637,25 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+@@ -439,6 +663,25 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
  
      LOG_DEBUG("");
  

@@ -26,7 +26,12 @@ outer for the new caller. No factory creation, caller-reference Release, resize,
 or SDK teardown occurs in this adopted path. Compatibility checks cover canonical
 command queue identity (including current ReShade and Streamline unwrap bridges),
 HWND, client-resolved zero dimensions, API-visible format and all descriptor
-fields, and fullscreen mode/timing. ReShade's visible descriptor preserves the
+fields, and fullscreen mode/timing. Only the specific requested IGNORE versus
+ReShade-visible UNSPECIFIED alpha pair is normalized: the HWND must be valid,
+non-layered and not marked NOREDIRECTIONBITMAP, and the native SDK chain must
+report the same HWND with IGNORE or UNSPECIFIED alpha. PREMULTIPLIED, STRAIGHT,
+the reverse pair, and all other descriptor mismatches remain rejected. ReShade's
+visible descriptor preserves the
 game's original format before RenoDX upgrades the native HDR surface.
 
 Destroying the FFX context removes its registry entry, clears the caller context,
@@ -93,3 +98,26 @@ No installation, game launch, or device change is performed by CI.
 OptiScaler's upstream license is included in the build artifact. These source
 changes remain subject to that license; Intel, AMD and ReShade runtime licenses
 remain separate. This recipe packages no vendor runtime libraries.
+
+## Opaque HWND alpha follow-up
+
+The first reuse build captured the correct ReShade outer, passed HWND, queue and
+other descriptor checks, and then cleanly rejected GTA's late FOR_HWND request:
+requested alpha IGNORE (3) versus ReShade-visible UNSPECIFIED (0). It did not enter
+the SDK destroy/recreate path. The game exited after the rejected API request.
+That was a safety rejection, not runtime proof of successful adoption.
+
+ReShade 6.8's modified-descriptor GetDesc1 reconstructs from legacy _orig_desc,
+which carries no alpha field; it explicitly writes UNSPECIFIED. DXVK 3.1.1's
+legacy CreateSwapChain conversion chooses IGNORE. For this actual D3D12 Linux
+path, vkd3d-proton 3.1 creates its Vulkan swapchain with OPAQUE composite alpha.
+Microsoft also documents UNSPECIFIED and IGNORE as equivalent for its composition
+texture alpha setter; this patch does not generalize that to transparent swapchains.
+The additional HWND style and native alpha checks keep this correction confined
+to the opaque presentation case observed here.
+
+- [ReShade 6.8 GetDesc1 reconstruction](https://github.com/crosire/reshade/blob/v6.8.0/source/dxgi/dxgi_swapchain.cpp)
+- [DXVK 3.1.1 legacy swapchain conversion](https://github.com/doitsujin/dxvk/blob/v3.1.1/src/dxgi/dxgi_factory.cpp)
+- [vkd3d-proton 3.1 Vulkan opaque composite alpha](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/swapchain.c)
+- [Microsoft alpha enum semantics](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ne-dxgi1_2-dxgi_alpha_mode)
+- [Microsoft composition texture alpha normalization](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiontexture-setalphamode)
