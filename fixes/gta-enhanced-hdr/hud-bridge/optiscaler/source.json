@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/daniel-h-0/OptiScaler",
+  "commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+  "patch_sha256": "0271ab4c41ba8e7d1fba6ed7e0a1844844676100ce6c3669b874a646764914c2",
+  "status": "Paired Windows build passed; short 1920x1200 HDR Story Mode owner acceptance with HUD and frame generation. Experimental outside this exact profile.",
+  "ui_packet_header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7",
+  "validated_pair": {
+    "date": "2026-11-05",
+    "scope": "Intel OXP3, GTA V Enhanced Story Mode, 1920x1200 HDR output/UI; short owner visual acceptance only",
+    "owner_result": "Looks normal; everything works including frame generation",
+    "optiscaler_sha256": "126edef53d8da2962c943a35e6383fa41eb37c2fb79f25a59e95980363c9efde",
+    "renodx_sha256": "cbc474691f69996f3a4d1a922364f86544c0a5deb4ed760892954aa1bb140f2a",
+    "ui_packet_header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7",
+    "qualification_limit": "No long-play, controlled performance, repeated FG-toggle/mode-change, other-resolution or manual DLL-reload qualification",
+    "original_workflow_commit": "9ef6afa813ce4d16d0ea706926ee21e0dec27b04",
+    "original_workflow_run": 42141184954
+  },
+  "scope": {
+    "api": "D3D12",
+    "game": "GTA V Enhanced Story Mode",
+    "steam_appid": 3240220,
+    "paired_ui_output_resolution": [
+      1920,
+      1200
+    ],
+    "snapshot_bytes": 112,
+    "limitations": "GTA-only capture/adoption; repeated adoption and manual producer reload unsupported; producer alone performs no HUD rendering",
+    "profile": "../profile.ini"
+  }
+}

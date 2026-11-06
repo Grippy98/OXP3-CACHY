@@ -1,0 +1,297 @@
+# GTA Enhanced: OptiScaler UI bridge source
+
+The paired build passed a short Story Mode test on the Intel OXP3 at **1920×1200 HDR**.
+The owner reported a normal picture and everything working, including frame generation
+and the HUD. This is limited visual acceptance of the exact paired profile; long-play,
+performance, repeated toggles, mode changes and other resolutions remain unqualified.
+See the [paired profile and rollback guide](../README.md) before using either component.
+
+This folder preserves the exact source patch and Windows build recipe against
+OptiScaler `273e8d449763d0e9e051dee831dc42badcd15d00`. The accepted DLL hash is
+`126edef53d8da2962c943a35e6383fa41eb37c2fb79f25a59e95980363c9efde`, built at
+[workflow commit 9ef6afa](https://github.com/Grippy98/OXP3-CACHY/commit/9ef6afa813ce4d16d0ea706926ee21e0dec27b04)
+([run 42141184954](https://github.com/Grippy98/OXP3-CACHY/actions/runs/42141184954)).
+It requires the matching [RenoDX consumer](../renodx/README.md); this producer alone
+does not render the HUD. [source.json](source.json) records the source and pair pins.
+No vendor runtime or game binaries are committed here.
+
+The historical controls below explain how this source was reached. Their earlier
+failure or pending-validation descriptions are superseded by the paired acceptance
+above, without qualifying broader configurations.
+
+## Problem and change
+
+With Intel XeFG already owning the physical chain, GTA later requests an FFX
+`FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12` context. Upstream releases
+`currentWrappedSwapchain` repeatedly and recreates the chain. In this configuration
+that object is the **inner native chain created inside Intel's SDK**, while the
+game and ReShade retain the outer XeFG proxy. The release loop destroys an object
+whose references the FFX request did not transfer. The SDK then reports
+`ERROR_POINTER_STILL_IN_USE` during teardown.
+
+This diagnostic applies only to `GTA5_Enhanced.exe`, FSRFG input and XeFG output.
+It captures one owned reference to ReShade's actual API-visible outer proxy during
+ReShade's constructor `SetPrivateData` bridge. Capture requires the exact SDK
+object, ReShade swapchain UUID, pointer size, ReShade caller export, and matching
+unwrapped COM identity. It never upgrades a borrowed private-data pointer later.
+
+When GTA asks for a compatible NEW/FOR_HWND chain, the patch transfers that owned
+capture into a unique FFX context lease and separately AddRefs the same ReShade
+outer for the new caller. No factory creation, caller-reference Release, resize,
+or SDK teardown occurs in this adopted path. Compatibility checks cover canonical
+command queue identity (including current ReShade and Streamline unwrap bridges),
+HWND, client-resolved zero dimensions, API-visible format and all descriptor
+fields, and fullscreen mode/timing. Only the specific requested IGNORE versus
+ReShade-visible UNSPECIFIED alpha pair is normalized: the HWND must be valid,
+non-layered and not marked NOREDIRECTIONBITMAP, and the native SDK chain must
+report the same HWND with IGNORE or UNSPECIFIED alpha. PREMULTIPLIED, STRAIGHT,
+the reverse pair, and all other descriptor mismatches remain rejected. ReShade's
+visible descriptor preserves the
+game's original format before RenoDX upgrades the native HDR surface.
+
+Destroying the FFX context removes its registry entry, clears the caller context,
+and releases exactly its own outer reference outside the registry lock. It keeps
+the Intel SDK context alive. Configure/query/dispatch on an owned lease are
+intercepted before configuration-dependent routing; an unsupported descriptor or
+stale SDK identity returns an error locally and never reaches native FFX with an
+emulated context.
+
+The capture remains owned across buffer-only ResizeBuffers/ResizeBuffers1; it
+does not acquire backbuffer references. Adoption revalidates its visible descriptor
+and SDK identity after any such resize. Unused captures are released before actual
+SDK context destruction/replacement. Failed Intel SDK teardown retains the SDK context and
+returns failure. The earlier experiment's incorrect reorder in the inner native
+wrapper is **not** included.
+
+The patch also logs the first sixteen enabled XeFG present statuses from the
+already-existing SDK query: API result, `framesPresented`, `frameGenResult`, and
+`isFrameGenEnabled`. It makes no extra SDK query and changes no debug rendering.
+
+## Limits and repeat-validation checks
+
+This is a bounded ownership diagnostic, not a general swapchain manager. If the
+game never makes its late FFX request, the constructor capture may retain the outer
+proxy until explicit SDK context teardown/replacement or process exit. After a
+capture has been consumed and its FFX lease destroyed, a later adoption request
+fails closed unless a new constructor capture exists. Generic repeated toggles,
+all exclusive-fullscreen policies, other games, and broader upstream release
+loops are not fixed. A request after its owned capture was consumed and destroyed
+produces a clean `no constructor-owned ReShade outer reference` rejection.
+
+A useful canary must show all of these together:
+
+1. `GTA captured owned ReShade outer ...` during initial chain construction.
+2. The later FFX FOR_HWND request produces `GTA FFX adopted API-visible ReShade
+   outer ...; no recreation or caller Release`, without SDK teardown errors.
+3. RenoDX remains mapped and the compositor reports HDR active after adoption.
+4. XeFG enabled present-status entries report successful interpolation and
+   multiple presented frames; the owner verifies picture and HUD remain correct.
+
+A descriptor, extension, queue, or capture rejection leaves the existing chain
+intact and reports the reason. Restore the prior hash-verified DLL after a failed
+canary. Do not label the game fixed from menu entry alone.
+
+## Build
+
+The workflow reuses the upstream MSVC Release x64 project and exact recursively
+pinned submodules. `build.ps1` verifies source and patch pins, disables only the
+upstream packaging pre/post commands, generates a unique resource version label,
+builds the DLL, and emits its hash, compiler versions and source provenance.
+The workflow has read-only repository permission and disables persisted checkout
+credentials. The [source-build workflow](../../../../.github/workflows/gta-hud-optiscaler.yml)
+runs only by manual dispatch. No installation, game launch, or device change is
+performed by CI. Runner compiler/SDK versions are recorded; this is a pinned-source
+build recipe, without a claim that future runner images reproduce identical bytes.
+
+## Primary contracts
+
+- [DXGI ResizeBuffers: release backbuffer resource references](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-resizebuffers)
+- [Exact OptiScaler base](https://github.com/daniel-h-0/OptiScaler/tree/273e8d449763d0e9e051dee831dc42badcd15d00)
+- [FFX provider: NEW/FOR_HWND caller reference plus separate context reference](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/framegeneration/fsr3/dx12/ffx_provider_fsr3framegenerationswapchain_dx12.cpp)
+- [FFX swapchain create descriptor ownership](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h)
+- [ReShade 6.8 constructor bridge and reference forwarding](https://github.com/crosire/reshade/blob/v6.8.0/source/dxgi/dxgi_swapchain.cpp)
+- [ReShade 6.8 swapchain UUID](https://github.com/crosire/reshade/blob/v6.8.0/source/dxgi/dxgi_swapchain.hpp)
+
+OptiScaler's [GPL-3.0 notice](licenses/OptiScaler-GPL-3.0.txt) is retained here and its upstream license is included in the build artifact. These source
+changes remain subject to that license; Intel, AMD and ReShade runtime licenses
+remain separate. This recipe packages no vendor runtime libraries.
+
+## Historical opaque HWND alpha follow-up
+
+The first reuse build captured the correct ReShade outer, passed HWND, queue and
+other descriptor checks, and then cleanly rejected GTA's late FOR_HWND request:
+requested alpha IGNORE (3) versus ReShade-visible UNSPECIFIED (0). It did not enter
+the SDK destroy/recreate path. The game exited after the rejected API request.
+That was a safety rejection, not runtime proof of successful adoption.
+
+ReShade 6.8's modified-descriptor GetDesc1 reconstructs from legacy _orig_desc,
+which carries no alpha field; it explicitly writes UNSPECIFIED. DXVK 3.1.1's
+legacy CreateSwapChain conversion chooses IGNORE. For this actual D3D12 Linux
+path, vkd3d-proton 3.1 creates its Vulkan swapchain with OPAQUE composite alpha.
+Microsoft also documents UNSPECIFIED and IGNORE as equivalent for its composition
+texture alpha setter; this patch does not generalize that to transparent swapchains.
+The additional HWND style and native alpha checks keep this correction confined
+to the opaque presentation case observed here.
+
+- [ReShade 6.8 GetDesc1 reconstruction](https://github.com/crosire/reshade/blob/v6.8.0/source/dxgi/dxgi_swapchain.cpp)
+- [DXVK 3.1.1 legacy swapchain conversion](https://github.com/doitsujin/dxvk/blob/v3.1.1/src/dxgi/dxgi_factory.cpp)
+- [vkd3d-proton 3.1 Vulkan opaque composite alpha](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/swapchain.c)
+- [Microsoft alpha enum semantics](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ne-dxgi1_2-dxgi_alpha_mode)
+- [Microsoft composition texture alpha normalization](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiontexture-setalphamode)
+
+## Historical native Intel D3D12 boundary follow-up
+
+The alpha-adjusted reuse build successfully captured and adopted the actual
+ReShade outer. HWND, queue, descriptors and native opaque-alpha validation passed;
+there was no swapchain recreation or SDK pointer-in-use teardown failure. Intel
+SetEnabled then succeeded. The game subsequently hit a **CPU access violation**
+in official vkd3d-proton 3.1's ID3D12CommandQueue::ExecuteCommandLists path, reached
+from libxess_fg Present. No GPU reset/hang was recorded in that failure window.
+This was a later failure; it does not invalidate the observed adoption success.
+
+The native command queue checks command-list implementation vtables. The fault
+corresponds to dereferencing a rejected/foreign list in its query-reset hazard
+check. Saved creation metadata also identifies the XeFG initialization device as
+ReShade's device proxy, while the factory path can provide a native presenting
+queue. Thus a mixed proxy/native D3D12 graph is the targeted compatibility
+hypothesis. The exact submitted foreign list was not inspected from live memory,
+so this remains an inference supported by the stack and object-creation metadata.
+
+This source follow-up adds a typed, owned COM unwrap helper for **Intel SDK
+inputs**, recursively supporting current ReShade and Streamline interfaces with
+cycle/depth guards. It does not replace global State objects or unwrap the game's
+ReShade outer swapchain. The previous capture/reuse and alpha guards remain.
+
+XeFG initialization owns its native device and initial direct presentation queue
+until SDK destruction succeeds. Queue.GetDevice must have the same canonical
+native device identity. Reinitializing a live context with a different queue is
+rejected; later resource-work queue updates own their own reference without
+dropping the original SDK queue lease. XeFG helper allocators, lists, fences and
+copy helpers use a separately retained native device; old borrowed-pointer
+substitutions are removed. Helper readiness gates context activation and includes
+successful creation/Close of every command list.
+
+Game-supplied command-list pointers remain untouched. A temporary owned native
+interface is used only during the SDK resource-tag call and must match the SDK
+device. The preexisting ignored literal-1 argument for backbuffer/legacy SDK tags
+is never queried as a COM object. OptiScaler's own XeLL output contexts also start
+with an owned native device, so a previously initialized output reused by XeFG
+has a consistent graph. The game's XeLL input objects remain unchanged. For local
+XeLL contexts only, the real SDK destruction error now propagates before deleting
+the wrapper, making device-reference retention accurate.
+
+Failed SDK destruction retains its context input references. If an owner is
+subsequently destroyed with a still-live SDK context, this diagnostic deliberately
+retains those references until process exit instead of releasing them underneath
+the SDK. It does not implement general recovery from failed SDK destruction.
+
+At this intermediate stage the helper had passed compile-only checks, while full
+MSVC and hardware checks were pending. That status is superseded: subsequent native
+boundary builds reported successful two-frame SDK presentation, and the complete
+paired build above passed short owner visual acceptance. For later rebuilds verify
+native device/queue boundaries, successful adoption, HDR, resource tagging and
+actual SDK presentation together; menu entry alone is insufficient.
+
+- [Intel SDK 3.0.2 native D3D12 object compatibility notes](https://github.com/intel/xess/releases/tag/v3.0.2)
+- [ReShade 6.8 device unwrap and proxy allocations](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_device.cpp)
+- [ReShade 6.8 queue unwraps lists before native submission](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_command_queue.cpp)
+- [vkd3d-proton 3.1 native command-list checks and query-reset submission](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/command.c)
+
+## Historical bounded UI metadata probe
+
+The native-boundary DLL subsequently presented actual generated frames: the SDK
+reported successful two-frame presentation with interpolation enabled. A guarded
+no-op resize setting preserved RenoDX tracking/HDR, and the modern overlay menu
+avoided the separate legacy ImGui null-context crash. At that stage the remaining
+owner-visible issue was a completely missing HUD while frame generation was enabled.
+The probe itself did not change separate UI capture or attempt composition. The
+paired producer/consumer below supersedes that missing-HUD status.
+
+The intermediate probe added only observational `UI_PROBE` logs to the existing FFX UI
+registration paths. Across the process, at most sixteen distinct resource/flags
+pairs are examined. Each records:
+
+- Declared FFX resource type, format, dimensions, flags, usage and state, plus
+  UI premultiplied-alpha/double-buffer flags and current frame/interpolation rect.
+- Actual ID3D12Resource format/dimensions/sample/usage metadata from GetDesc.
+- FFX backend and State device pointers, their native identities, and the UI
+  resource's owning-device identity. The feature's protected Device field is not
+  exposed or changed.
+- Current SDK backbuffer index and actual resource format/dimensions. Temporary
+  GetBuffer/QI references are released before the intercepted call returns.
+
+There is no pixel readback, live debug attachment, resource state transition,
+clone creation/activation, UI retention after the call, shader change, SDK UI
+resource tagging change, or rendering behavior change. Existing DisableUI and
+other configuration paths run as before. The limit mutex is released before any
+COM query/logging, and all probe COM references are local owned temporaries.
+
+The resource-description ABI and both UI flag bits are checked against the exact
+OptiScaler SDK submodule pin
+`c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`; compile-time assertions verify the
+flag values against the headers actually used by CI.
+
+A resource's native format alone does not identify its transfer function or prove
+which RenoDX clone game rendering used. RenoDX's view-clone routing tracks a
+separate resource/descriptor graph, and no stable native COM clone-lookup ABI was
+established. The probe deliberately avoids interpreting RenoDX shared C++ data or
+creating extra views to induce cloning. Those findings led to the separate maintained
+RenoDX consumer, which uses its own live clone tracking and final HDR conversion.
+
+- [Pinned FFX resource metadata ABI](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_api_types.h)
+- [Pinned FFX UI alpha/double-buffer flag contract](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_framegeneration.h)
+
+## Maintained UI packet producer
+
+The metadata probe identified a real full-size BGRA8 UI resource with FFX flags3
+(premultiplied alpha plus internal UI double-buffering) and FFX state0xC, which
+maps to native D3D12 shader-read state0xC0. That BGRA8 target qualifies for GTA's
+RenoDX FP16 resource-view clone rule. Sampling the original through native Opti
+helper objects therefore cannot be assumed to sample the rendered clone.
+
+This follow-up provides a versioned COM packet for a matching maintained RenoDX
+GTA consumer. The producer does not draw, copy, color-convert, or SDK-tag UI. It
+retains the existing UI-probe logs and the tested native XeFG/ownership changes.
+
+The packet is attached with SetPrivateDataInterface on the live SDK swapchain,
+which is the native object available to the outer ReShade/Reno swapchain. Its
+private property GUID and IUnknown interface IID are distinct. The fixed112-byte
+POD metadata carries magic/version/size, a session epoch, original FFX frame ID,
+independent monotonic publicationId, alpha/buffering flags, both FFX and native
+state enums, actual/declared size/format metadata, and generation rectangle.
+Successful resource/queue acquire methods return caller-owned QI references.
+The packet owns the original API-visible UI resource and native direct queue;
+it owns no swapchain, avoiding a private-data reference cycle. Consumers must
+unwrap resource identity before accessing Reno's own tracking/clone APIs.
+
+Publication occurs during existing UI registration, before the game's outer
+ReShade OnPresent callback. The frame metadata comes from FFX Configure before
+Opti resets its own counters. A registered UI packet remains composition-active
+when interpolation is paused or disabled; interpolationEnabled is separate.
+Null UI clears the property while preserving same-frame re-registration data.
+Actual FFX context destruction and physical swapchain release/replacement close
+the session before releasing the carrier. SDK pause/Deactivate is not UI teardown.
+
+The producer serializes attachment and lifecycle clearing. A publisher snapshots
+its epoch/frame revision, owns the SDK's original presentation queue at the existing FFX callback entry
+through a checked RTTI path and non-virtual owned accessor, and
+reserves its publication serial before delayed COM queries; it never dereferences
+the FG feature after those queries.
+Commit rejects a changed session, frame, carrier, or newer UI registration.
+Error-path clearing repeats the epoch/serial checks before touching the carrier.
+Frame updates cannot revive a carrier closed by teardown. Packet methods never
+take the producer mutex, and the only cross-DLL data is fixed POD and COM methods.
+
+FFX flag3 requires ordering at Present, not merely COM lifetime. The consumer must
+validate the newest session/publication, native queue/device identity, formats,
+rectangle, and existing live clone. It must snapshot/read that clone on the same
+native game queue after game UI writes and before reuse; any GPU leases must
+retire on checked fence completion. A COM AddRef keeps the allocation alive,
+not its pixel contents. The original UI allocation is never read back to the CPU.
+
+The paired consumer performs clone-aware HDR composition in Reno's existing final
+pass. The shared COM implementation, full MSVC producer build and Clang/shader
+consumer build passed. The exact pair then passed short owner visual acceptance
+at 1920×1200 HDR with HUD and frame generation. The observed alpha/encoding path
+is not generalized to other profiles; long-play, detailed colorimetry, generated-HUD
+motion quality and performance remain unqualified.

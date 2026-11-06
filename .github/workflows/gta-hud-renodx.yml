@@ -1,0 +1,51 @@
+name: GTA HUD RenoDX source build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gta-hud-renodx-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out the source patch and build recipe
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Keep source line endings deterministic
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - name: Check HDR UI luminance and alpha reference properties
+        shell: pwsh
+        working-directory: fixes/gta-enhanced-hdr/hud-bridge/renodx
+        run: python -m unittest discover -s tests -v
+      - name: Check out exact RenoDX source and pinned submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: clshortfuse/renodx
+          ref: bc0ead39917634e95c534f7e8cfb59ab82880747
+          path: renodx-source
+          submodules: recursive
+          persist-credentials: false
+      - name: Build GTA addon and regenerate its shaders
+        shell: pwsh
+        run: >-
+          & ./fixes/gta-enhanced-hdr/hud-bridge/renodx/build.ps1
+          -SourceDir ./renodx-source
+          -ArtifactDir ./renodx-artifact
+      - name: Upload addon and source provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: renodx-bc0ead39-gta-ui
+          path: renodx-artifact/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,1740 @@
+diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
+index 492e5553..bb2b19fc 100644
+--- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
++++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
+@@ -5,6 +5,8 @@
+ #include <hudfix/Hudfix_Dx12.h>
+ 
+ #include <menu/menu_overlay_dx.h>
++#include <hooks/FG_Hooks.h>
++#include <inputs/FG/FfxApi_Dx12_FG.h>
+ #include <resource_tracking/ResTrack_dx12.h>
+ 
+ #include <magic_enum.hpp>
+@@ -12,6 +14,7 @@
+ #include <DirectXMath.h>
+ 
+ using namespace DirectX;
++using Microsoft::WRL::ComPtr;
+ 
+ void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_level_t level, void* userData)
+ {
+@@ -48,19 +51,27 @@ int XeFG_Dx12::QueryMaxInterpolationCount(ID3D12Device* device)
+     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+ #endif // !DONT_USE_XMX
+ 
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(device);
++    if (nativeDevice == nullptr) return 0;
+     xefg_swapchain_handle_t context = nullptr;
+-    auto result = XeFGProxy::D3D12CreateContext()(device, &context);
++    auto result = XeFGProxy::D3D12CreateContext()(nativeDevice.Get(), &context);
+ 
+     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+     {
+         LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
++        if (context != nullptr) nativeDevice.Detach(); // unexpected partial live SDK context
+         return 0;
+     }
+ 
+     // Only maxSupportedInterpolations is reported before swapchain init
+     xefg_swapchain_properties_t props {};
+     result = XeFGProxy::GetProperties()(context, &props);
+-    XeFGProxy::Destroy()(context);
++    if (XeFGProxy::Destroy()(context) != XEFG_SWAPCHAIN_RESULT_SUCCESS)
++    {
++        // A still-live SDK context must not lose our owned native input reference.
++        nativeDevice.Detach();
++        LOG_ERROR("XeFG capability context destroy failed; native device reference retained");
++    }
+ 
+     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+     {
+@@ -80,6 +91,19 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+         return false;
+     }
+ 
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(device);
++    if (nativeDevice == nullptr)
++    {
++        LOG_ERROR("XeFG native device boundary rejected unsupported/cyclic device proxy");
++        return false;
++    }
++    if (_swapChainContext != nullptr)
++    {
++        LOG_ERROR("XeFG native device boundary refuses to overwrite a live SDK context");
++        return false;
++    }
++    _sdkDevice = nativeDevice;
++    LOG_INFO("XeFG native device boundary: input {:X}, native {:X}", (size_t)device, (size_t)_sdkDevice.Get());
+     auto createResult = false;
+ 
+ #ifndef DONT_USE_XMX
+@@ -88,11 +112,12 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+ 
+     do
+     {
+-        auto result = XeFGProxy::D3D12CreateContext()(device, &_swapChainContext);
++        auto result = XeFGProxy::D3D12CreateContext()(_sdkDevice.Get(), &_swapChainContext);
+ 
+         if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+         {
+             LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
++            if (_swapChainContext == nullptr) _sdkDevice.Reset();
+             return false;
+         }
+ 
+@@ -107,7 +132,7 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+ 
+         // XeFG reads the frames of the XeLL context it gets: the XeLL output's, or its own next to a Reflex or
+         // AntiLag 2 output. Either stays valid until this context is destroyed.
+-        if (auto xellContext = InputCommon::acquire_xefg_xell(device); xellContext != nullptr)
++        if (auto xellContext = InputCommon::acquire_xefg_xell(_sdkDevice.Get()); xellContext != nullptr)
+         {
+             result = XeFGProxy::SetLatencyReduction()(_swapChainContext, xellContext);
+ 
+@@ -166,6 +191,8 @@ bool XeFG_Dx12::DestroySwapchainContext()
+ 
+     if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
+     {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "XeFG SDK context teardown");
++        FGHooks::ReleaseCapturedFGSwapchain();
+         auto context = _swapChainContext;
+         _swapChainContext = nullptr;
+ 
+@@ -177,6 +204,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+         if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+         {
+             _swapChainContext = context;
++            return false;
+         }
+         else
+         {
+@@ -184,12 +212,38 @@ bool XeFG_Dx12::DestroySwapchainContext()
+ 
+             // Its XeLL context isn't read anymore
+             InputCommon::release_xefg_xell();
++            _gameCommandQueue = nullptr;
++            _sdkGameQueue.Reset();
++            _sdkDevice.Reset();
+         }
+     }
+ 
+     return true;
+ }
+ 
++bool XeFG_Dx12::SetNativeSdkQueue(ID3D12CommandQueue* queue)
++{
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(queue);
++    if (nativeQueue == nullptr || _sdkDevice == nullptr ||
++        !XeFGNative::MatchesDevice(nativeQueue.Get(), _sdkDevice.Get()) ||
++        nativeQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
++    {
++        LOG_ERROR("XeFG native queue boundary rejected queue/device identity or non-direct queue");
++        return false;
++    }
++    if (_swapChainContext != nullptr && _sdkGameQueue != nullptr &&
++        !XeFGNative::SameIdentity(nativeQueue.Get(), _sdkGameQueue.Get()))
++    {
++        LOG_ERROR("XeFG native queue boundary refuses to replace a live SDK context's presentation queue");
++        return false;
++    }
++    LOG_INFO("XeFG native queue boundary: input {:X}, native {:X}, native device {:X}",
++             (size_t)queue, (size_t)nativeQueue.Get(), (size_t)_sdkDevice.Get());
++    _sdkGameQueue = std::move(nativeQueue);
++    _gameCommandQueue = _sdkGameQueue.Get();
++    return true;
++}
++
+ xefg_swapchain_d3d12_resource_data_t XeFG_Dx12::GetResourceData(FG_ResourceType type, int index)
+ {
+     if (index < 0)
+@@ -252,7 +306,8 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+         if (State::Instance().currentD3D12Device == nullptr)
+             return false;
+ 
+-        CreateSwapchainContext(State::Instance().currentD3D12Device);
++        if (!CreateSwapchainContext(State::Instance().currentD3D12Device))
++            return false;
+ 
+         if (_swapChainContext == nullptr)
+             return false;
+@@ -274,14 +329,12 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+     }
+ 
+     IDXGIFactory* realFactory = nullptr;
+-    ID3D12CommandQueue* realQueue = nullptr;
++    if (!SetNativeSdkQueue(cmdQueue)) return false;
++    auto realQueue = _sdkGameQueue.Get();
+ 
+     if (!CheckForRealObject(__FUNCTION__, factory, (IUnknown**) &realFactory))
+         realFactory = factory;
+ 
+-    if (!CheckForRealObject(__FUNCTION__, cmdQueue, (IUnknown**) &realQueue))
+-        realQueue = cmdQueue;
+-
+     IDXGIFactory2* factory12 = nullptr;
+     if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
+         return false;
+@@ -419,7 +472,8 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+         if (State::Instance().currentD3D12Device == nullptr)
+             return false;
+ 
+-        CreateSwapchainContext(State::Instance().currentD3D12Device);
++        if (!CreateSwapchainContext(State::Instance().currentD3D12Device))
++            return false;
+ 
+         if (_swapChainContext == nullptr)
+             return false;
+@@ -441,14 +495,12 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+     }
+ 
+     IDXGIFactory* realFactory = nullptr;
+-    ID3D12CommandQueue* realQueue = nullptr;
++    if (!SetNativeSdkQueue(cmdQueue)) return false;
++    auto realQueue = _sdkGameQueue.Get();
+ 
+     if (!CheckForRealObject(__FUNCTION__, factory, (IUnknown**) &realFactory))
+         realFactory = factory;
+ 
+-    if (!CheckForRealObject(__FUNCTION__, cmdQueue, (IUnknown**) &realQueue))
+-        realQueue = cmdQueue;
+-
+     IDXGIFactory2* factory12 = nullptr;
+     if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
+         return false;
+@@ -547,8 +599,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+ {
+     LOG_DEBUG("");
+ 
+-    _device = device;
+     CreateObjects(device);
++    if (!_nativeObjectsReady)
++    {
++        LOG_ERROR("XeFG FG context creation rejected incomplete/foreign native helper objects");
++        return;
++    }
+ 
+     if (_fgContext == nullptr && _swapChainContext != nullptr)
+     {
+@@ -568,6 +624,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+ void XeFG_Dx12::Activate()
+ {
+     LOG_DEBUG("");
++    if (!_nativeObjectsReady)
++    {
++        LOG_ERROR("XeFG activation rejected because native helper objects are not ready");
++        return;
++    }
++
+ 
+     auto currentFeature = State::Instance().currentFeature;
+     bool nativeAA = false;
+@@ -659,7 +721,7 @@ bool XeFG_Dx12::Shutdown()
+     ReleaseObjects();
+ 
+     if (_swapChainContext != nullptr)
+-        DestroySwapchainContext();
++        return DestroySwapchainContext();
+ 
+     return true;
+ }
+@@ -984,7 +1046,18 @@ void* XeFG_Dx12::FrameGenerationContext() { return _fgContext; }
+ 
+ void* XeFG_Dx12::SwapchainContext() { return _swapChainContext; }
+ 
+-XeFG_Dx12::~XeFG_Dx12() { Shutdown(); }
++XeFG_Dx12::~XeFG_Dx12()
++{
++    Shutdown();
++    if (_swapChainContext != nullptr)
++    {
++        // Diagnostic fail-safe: the SDK context is still live. Keep its input
++        // references until process teardown rather than releasing them underneath it.
++        _sdkDevice.Detach();
++        _sdkGameQueue.Detach();
++        LOG_ERROR("XeFG owner destroyed with a live SDK context; native inputs retained until process exit");
++    }
++}
+ 
+ bool XeFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
+ 
+@@ -1090,6 +1163,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
+ 
+ void XeFG_Dx12::ReleaseObjects()
+ {
++    _nativeObjectsReady = false;
++    _nativeObjectsInitialized = false;
+     for (size_t i = 0; i < BUFFER_COUNT; i++)
+     {
+         SAFE_RELEASE(_uiCommandAllocator[i]);
+@@ -1112,23 +1187,46 @@ void XeFG_Dx12::ReleaseObjects()
+     _depthInvert.reset();
+ 
+     ReleaseResourceCopies();
++    _helperGameQueue.Reset();
++    _gameCommandQueue = _sdkGameQueue.Get();
++    _device = nullptr;
++    _helperDevice.Reset();
+ }
+ 
+ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+ {
+-    _device = InDevice;
+-
++    _nativeObjectsReady = false;
++    auto nativeDevice = XeFGNative::Unwrap<ID3D12Device>(InDevice);
++    if (nativeDevice == nullptr || (_sdkDevice != nullptr &&
++        !XeFGNative::SameIdentity(nativeDevice.Get(), _sdkDevice.Get())) ||
++        (_helperDevice != nullptr && !XeFGNative::SameIdentity(nativeDevice.Get(), _helperDevice.Get())))
++    {
++        LOG_ERROR("XeFG helper creation rejected a different/unsupported native device");
++        return;
++    }
++    _helperDevice = std::move(nativeDevice);
++    _device = _helperDevice.Get();
++    InDevice = _device;
++    const auto helpersComplete = [this]()
++    {
++        for (size_t i = 0; i < BUFFER_COUNT; ++i)
++            if (_uiCommandAllocator[i] == nullptr || _uiCommandList[i] == nullptr ||
++                _scCommandAllocator[i] == nullptr || _scCommandList[i] == nullptr)
++                return false;
++        return _uiFence != nullptr && _uiFenceEvent != nullptr && _scFence != nullptr && _scFenceEvent != nullptr;
++    };
+     if (_uiCommandAllocator[0] != nullptr)
++    {
++        _nativeObjectsReady = _nativeObjectsInitialized && helpersComplete();
+         return;
++    }
+ 
+     LOG_DEBUG("");
++    size_t initialized = 0;
+ 
+     do
+     {
+         HRESULT result;
+-        ID3D12CommandAllocator* allocator = nullptr;
+-        ID3D12GraphicsCommandList* cmdList = nullptr;
+-        ID3D12CommandQueue* cmdQueue = nullptr;
+ 
+         // FG
+         for (size_t i = 0; i < BUFFER_COUNT; i++)
+@@ -1149,8 +1247,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+             }
+ 
+             _uiCommandAllocator[i]->SetName(std::format(L"_uiCommandAllocator[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _uiCommandAllocator[i], (IUnknown**) &allocator))
+-                _uiCommandAllocator[i] = allocator;
+ 
+             result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _uiCommandAllocator[i], NULL,
+                                                  IID_PPV_ARGS(&_uiCommandList[i]));
+@@ -1160,8 +1256,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                 break;
+             }
+             _uiCommandList[i]->SetName(std::format(L"_uiCommandList[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _uiCommandList[i], (IUnknown**) &cmdList))
+-                _uiCommandList[i] = cmdList;
+ 
+             result = _uiCommandList[i]->Close();
+             if (result != S_OK)
+@@ -1199,8 +1293,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+             }
+ 
+             _scCommandAllocator[i]->SetName(std::format(L"_scCommandAllocator[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _scCommandAllocator[i], (IUnknown**) &allocator))
+-                _scCommandAllocator[i] = allocator;
+ 
+             result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _scCommandAllocator[i], NULL,
+                                                  IID_PPV_ARGS(&_scCommandList[i]));
+@@ -1210,8 +1302,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                 break;
+             }
+             _scCommandList[i]->SetName(std::format(L"_scCommandList[{}]", i).c_str());
+-            if (CheckForRealObject(__FUNCTION__, _scCommandList[i], (IUnknown**) &cmdList))
+-                _scCommandList[i] = cmdList;
+ 
+             result = _scCommandList[i]->Close();
+             if (result != S_OK)
+@@ -1239,9 +1329,12 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+                     break;
+                 }
+             }
++            ++initialized;
+         }
+ 
+     } while (false);
++    _nativeObjectsInitialized = initialized == BUFFER_COUNT;
++    _nativeObjectsReady = _nativeObjectsInitialized && helpersComplete();
+ }
+ 
+ bool XeFG_Dx12::Present()
+@@ -1584,8 +1677,23 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+             (XeFGProxy::SetUiCompositionState() != nullptr || Config::Instance()->FGDrawUIOverFG.value_or_default()))
+         {
+             auto frameId = static_cast<uint32_t>(_frameCount - indexDiff);
++            ComPtr<ID3D12CommandList> nativeCommandList;
++            auto sdkCommandList = static_cast<ID3D12CommandList*>(fResource->cmdList);
++            // Old SDK compatibility uses literal 1 as an ignored command-list argument.
++            // It is not a COM object and must never be queried/unwrapped.
++            if (sdkCommandList != nullptr && reinterpret_cast<uintptr_t>(sdkCommandList) != 1)
++            {
++                nativeCommandList = XeFGNative::Unwrap<ID3D12CommandList>(sdkCommandList);
++                if (nativeCommandList == nullptr ||
++                    !XeFGNative::MatchesDevice(nativeCommandList.Get(), _sdkDevice.Get()))
++                {
++                    LOG_ERROR("XeFG resource tag rejected a foreign command-list/device identity");
++                    return false;
++                }
++                sdkCommandList = nativeCommandList.Get();
++            }
+             auto result =
+-                XeFGProxy::D3D12TagFrameResource()(_swapChainContext, fResource->cmdList, frameId, &resourceParam);
++                XeFGProxy::D3D12TagFrameResource()(_swapChainContext, sdkCommandList, frameId, &resourceParam);
+             LOG_DEBUG("D3D12TagFrameResource, frameId: {}, type: {} result: {} ({})", frameId,
+                       magic_enum::enum_name(type), magic_enum::enum_name(result), (int32_t) result);
+ 
+@@ -1614,7 +1722,18 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+     return true;
+ }
+ 
+-void XeFG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) { _gameCommandQueue = queue; }
++void XeFG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue)
++{
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(queue);
++    if (nativeQueue == nullptr || !XeFGNative::MatchesDevice(nativeQueue.Get(), _sdkDevice.Get()))
++    {
++        LOG_ERROR("XeFG command queue update rejected foreign device; previous owned queue retained");
++        return;
++    }
++    // Resource-work queue updates must not drop the initial SDK presentation queue's lifetime reference.
++    _helperGameQueue = std::move(nativeQueue);
++    _gameCommandQueue = _helperGameQueue.Get();
++}
+ 
+ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+ {
+@@ -1643,12 +1762,16 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+ 
+     if (!State::Instance().isShuttingDown)
+     {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "physical XeFG swapchain teardown");
+         State::Instance().currentFGSwapchain = nullptr;
+ 
+-        if (_swapChainContext != nullptr)
+-            DestroySwapchainContext();
+-
+-        _swapChainContext = nullptr;
++        if (_swapChainContext != nullptr && !DestroySwapchainContext())
++        {
++            LOG_WARN("XeFG teardown deferred: SDK context remains alive");
++            if (Config::Instance()->FGUseMutexForSwapchain.value_or_default())
++                Mutex.unlockThis(1);
++            return false;
++        }
+     }
+ 
+     ReleaseObjects();
+diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.h b/OptiScaler/framegen/xefg/XeFG_Dx12.h
+index 93f004a2..c4127f3b 100644
+--- a/OptiScaler/framegen/xefg/XeFG_Dx12.h
++++ b/OptiScaler/framegen/xefg/XeFG_Dx12.h
+@@ -7,6 +7,7 @@
+ 
+ #include "shaders/depth_invert/DI_Dx12.h"
+ #include "XeFG_DynamicMFG.h"
++#include "XeFG_NativeD3D12.h"
+ 
+ #include <xell.h>
+ #include <xell_d3d12.h>
+@@ -19,6 +20,14 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
+   private:
+     xefg_swapchain_handle_t _swapChainContext = nullptr;
+     xefg_swapchain_handle_t _fgContext = nullptr;
++    // These references outlive SDK use, including a failed Destroy call.
++    Microsoft::WRL::ComPtr<ID3D12Device> _sdkDevice;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _sdkGameQueue;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _helperGameQueue;
++    Microsoft::WRL::ComPtr<ID3D12Device> _helperDevice;
++    bool _nativeObjectsReady = false;
++    bool _nativeObjectsInitialized = false;
++    bool SetNativeSdkQueue(ID3D12CommandQueue* queue);
+ 
+     uint32_t _width = 0;
+     uint32_t _height = 0;
+@@ -45,6 +54,9 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
+     void CreateObjects(ID3D12Device* InDevice) override final;
+ 
+   public:
++    // UI composition follows the SDK's initial presentation queue, not a later resource-work queue.
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> AcquireUiPresentationQueue() const { return _sdkGameQueue; }
++
+     // Uses a temporary context, works before our FG swapchain exists. Returns 0 on failure
+     static int QueryMaxInterpolationCount(ID3D12Device* device);
+ 
+diff --git a/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h b/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h
+new file mode 100644
+index 00000000..f114ffcb
+--- /dev/null
++++ b/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h
+@@ -0,0 +1,60 @@
++#pragma once
++
++#include <d3d12.h>
++#include <wrl/client.h>
++#include <array>
++#include <cstdint>
++#include <utility>
++
++// Intel SDK inputs only. Never use this helper on the game's presentation chain
++// or overwrite State's application-facing objects with the returned interfaces.
++namespace XeFGNative
++{
++using Microsoft::WRL::ComPtr;
++inline constexpr GUID ReShadeUnwrapped = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++inline constexpr GUID StreamlineUnwrapped = {0xadec44e2, 0x61f0, 0x45c3, {0xad,0x9f,0x1b,0x37,0x37,0x92,0x84,0xff}};
++
++template <typename T> ComPtr<T> Unwrap(IUnknown* object)
++{
++    if (reinterpret_cast<uintptr_t>(object) <= 0xffff) return {}; // null/legacy SDK sentinel, never QI it
++    ComPtr<IUnknown> current = object;
++    std::array<IUnknown*, 8> visited {};
++    for (size_t depth = 0; depth < visited.size(); ++depth)
++    {
++        visited[depth] = current.Get();
++        ComPtr<IUnknown> next;
++        if (FAILED(current->QueryInterface(ReShadeUnwrapped, (void**)next.GetAddressOf())) || next == nullptr)
++        {
++            next.Reset();
++            current->QueryInterface(StreamlineUnwrapped, (void**)next.GetAddressOf());
++        }
++        if (next == nullptr || next.Get() == current.Get())
++        {
++            ComPtr<T> typed;
++            current.As(&typed);
++            return typed; // owns QI reference; never returns a released borrowed pointer
++        }
++        for (size_t previous = 0; previous <= depth; ++previous)
++            if (visited[previous] == next.Get()) return {}; // cyclic proxy chain
++        current = std::move(next);
++    }
++    return {}; // over-deep proxy chain
++}
++
++inline bool SameIdentity(IUnknown* first, IUnknown* second)
++{
++    if (first == nullptr || second == nullptr) return false;
++    ComPtr<IUnknown> a, b;
++    return SUCCEEDED(first->QueryInterface(IID_PPV_ARGS(a.GetAddressOf()))) &&
++        SUCCEEDED(second->QueryInterface(IID_PPV_ARGS(b.GetAddressOf()))) && a.Get() == b.Get();
++}
++
++inline bool MatchesDevice(ID3D12DeviceChild* child, ID3D12Device* device)
++{
++    if (child == nullptr || device == nullptr) return false;
++    ComPtr<ID3D12Device> parent;
++    if (FAILED(child->GetDevice(IID_PPV_ARGS(parent.GetAddressOf())))) return false;
++    auto nativeParent = Unwrap<ID3D12Device>(parent.Get());
++    return SameIdentity(nativeParent.Get(), device);
++}
++} // namespace XeFGNative
+diff --git a/OptiScaler/hooks/FG_Hooks.cpp b/OptiScaler/hooks/FG_Hooks.cpp
+index a60e1bc6..049177fc 100644
+--- a/OptiScaler/hooks/FG_Hooks.cpp
++++ b/OptiScaler/hooks/FG_Hooks.cpp
+@@ -22,10 +22,117 @@
+ #include <imgui/ImGuiNotify.hpp>
+ 
+ #include <d3d12.h>
++#include <atomic>
++#include <mutex>
+ #include <detours/detours.h>
+ 
+ #define XEFG_RESOURCE_REF_LIMIT 1
+ 
++// ReShade 6.8 publishes this pointer during its constructor, while the initial ref is alive.
++// Never upgrade the private-data pointer later: GetPrivateData does not own a COM reference.
++static const GUID kReShadeSwapchain = {0x1f445f9f, 0x9887, 0x4c4c, {0x90,0x55,0x4e,0x3b,0xad,0xaf,0xcc,0xa8}};
++static const GUID kReShadeUnwrapped = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++static std::mutex capturedFGMutex;
++static IDXGISwapChain4* capturedFGVisible = nullptr; // owns exactly one reference
++static IDXGISwapChain* capturedFGSdk = nullptr; // borrowed, kept alive by the visible proxy
++static thread_local bool releasingOwnedFG = false;
++
++IDXGISwapChain4* FGHooks::TakeCapturedFGSwapchain(IDXGISwapChain* expectedSdkSwapchain)
++{
++    std::lock_guard lock(capturedFGMutex);
++    if (capturedFGSdk != expectedSdkSwapchain)
++        return nullptr;
++    auto visible = capturedFGVisible;
++    capturedFGVisible = nullptr;
++    capturedFGSdk = nullptr;
++    return visible; // transfer, without AddRef
++}
++
++void FGHooks::ReleaseOwnedFGSwapchain(IDXGISwapChain4* visible, IDXGISwapChain* sdkSwapchain)
++{
++    if (visible == nullptr)
++        return;
++    ffxClearUiPacket_Dx12FG(sdkSwapchain, "owned outer reference released");
++    const bool wasReleasing = releasingOwnedFG;
++    releasingOwnedFG = true;
++    const auto refs = visible->Release(); // release only the reference this bridge owns
++    releasingOwnedFG = wasReleasing;
++    if (refs == 0)
++    {
++        auto& state = State::Instance();
++        if (state.currentFGSwapchain == sdkSwapchain)
++            state.currentFGSwapchain = nullptr;
++        if (state.currentSwapchain == sdkSwapchain)
++            state.currentSwapchain = nullptr;
++    }
++}
++
++void FGHooks::ReleaseCapturedFGSwapchain()
++{
++    IDXGISwapChain4* visible = nullptr;
++    IDXGISwapChain* sdk = nullptr;
++    {
++        std::lock_guard lock(capturedFGMutex);
++        visible = capturedFGVisible;
++        sdk = capturedFGSdk;
++        capturedFGVisible = nullptr; // clear before Release can re-enter hooks
++        capturedFGSdk = nullptr;
++    }
++    ReleaseOwnedFGSwapchain(visible, sdk);
++}
++
++HRESULT FGHooks::hkFGSetPrivateData(IDXGIObject* This, REFGUID Name, UINT DataSize, const void* pData)
++{
++    const auto result = o_FGSetPrivateData(This, Name, DataSize, pData);
++    auto& state = State::Instance();
++    if (FAILED(result) || state.activeFgOutput != FGOutput::XeFG || state.activeFgInput != FGInput::FSRFG ||
++        This != static_cast<IDXGIObject*>(state.currentFGSwapchain) || Name != kReShadeSwapchain ||
++        DataSize != sizeof(void*) || pData == nullptr ||
++        _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") != 0)
++        return result;
++
++    HMODULE caller = nullptr;
++    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                           reinterpret_cast<LPCWSTR>(_ReturnAddress()), &caller) ||
++        GetProcAddress(caller, "ReShadeVersion") == nullptr)
++        return result;
++
++    IDXGISwapChain4* candidate = nullptr;
++    IUnknown* published = nullptr;
++    memcpy(&published, pData, sizeof(published));
++    // The constructor's initial reference makes this QI safe; no weak-pointer upgrade occurs.
++    if (published == nullptr || FAILED(published->QueryInterface(IID_PPV_ARGS(&candidate))))
++        return result;
++    IUnknown* inner = nullptr;
++    IUnknown* innerIdentity = nullptr;
++    IUnknown* sdkIdentity = nullptr;
++    const bool matches = SUCCEEDED(candidate->QueryInterface(kReShadeUnwrapped, (void**)&inner)) && inner != nullptr &&
++        SUCCEEDED(inner->QueryInterface(IID_PPV_ARGS(&innerIdentity))) &&
++        SUCCEEDED(This->QueryInterface(IID_PPV_ARGS(&sdkIdentity))) && innerIdentity == sdkIdentity;
++    if (innerIdentity != nullptr) innerIdentity->Release();
++    if (sdkIdentity != nullptr) sdkIdentity->Release();
++    if (inner != nullptr) inner->Release();
++    if (!matches)
++    {
++        candidate->Release();
++        LOG_WARN("GTA outer capture rejected: ReShade unwrap does not match current XeFG proxy");
++        return result;
++    }
++    bool captured = false;
++    {
++        std::lock_guard lock(capturedFGMutex);
++        if (capturedFGVisible == nullptr)
++        {
++            capturedFGVisible = candidate;
++            capturedFGSdk = state.currentFGSwapchain;
++            captured = true;
++        }
++    }
++    if (!captured) candidate->Release();
++    else LOG_INFO("GTA captured owned ReShade outer {:X} for XeFG proxy {:X}", (size_t) candidate, (size_t) This);
++    return result;
++}
++
+ static ID3D12Fence* resizeFence = nullptr;
+ static UINT64 resizeFenceValue = 0;
+ static HANDLE resizeFenceEvent = nullptr;
+@@ -352,6 +459,12 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+     if (pSwapChain == nullptr)
+         return;
+ 
++    if (State::Instance().currentFGSwapchain != nullptr && State::Instance().currentFGSwapchain != pSwapChain)
++    {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "physical swapchain replaced");
++        ReleaseCapturedFGSwapchain();
++    }
++
+     _hwnd = hWnd;
+ 
+     if (_dx12InteropPresentSC == pSwapChain)
+@@ -364,6 +477,7 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+     State::Instance().currentSwapchain = pSwapChain;
+ 
+     HookFGSwapchain(pSwapChain);
++    ffxBeginUiPacketSession_Dx12FG(pSwapChain);
+ }
+ 
+ void FGHooks::SetDx12InteropPresentSC(IDXGISwapChain* pSwapChain, HWND hWnd)
+@@ -401,6 +515,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+     void** pFactoryVTable = *reinterpret_cast<void***>(pSwapChain);
+ 
+     o_FGRelease = (PFN_Release) pFactoryVTable[2];
++    o_FGSetPrivateData = (PFN_SetPrivateData) pFactoryVTable[3];
+     o_FGSCPresent = (PFN_Present) pFactoryVTable[8];
+     o_FGSCSetFullscreenState = (PFN_SetFullscreenState) pFactoryVTable[10];
+     o_FGSCGetFullscreenState = (PFN_GetFullscreenState) pFactoryVTable[11];
+@@ -429,6 +544,8 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+         DetourUpdateThread(GetCurrentThread());
+ 
+         DetourAttach(&(PVOID&) o_FGRelease, hkFGRelease);
++        if (o_FGSetPrivateData != nullptr)
++            DetourAttach(&(PVOID&) o_FGSetPrivateData, hkFGSetPrivateData);
+         DetourAttach(&(PVOID&) o_FGSCPresent, hkFGPresent);
+         DetourAttach(&(PVOID&) o_FGSCResizeTarget, hkResizeTarget);
+         DetourAttach(&(PVOID&) o_FGSCResizeBuffers, hkResizeBuffers);
+@@ -462,6 +579,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+         {
+             LOG_ERROR("Failed to attach detour: {:X}", detourResult);
+             o_FGRelease = nullptr;
++            o_FGSetPrivateData = nullptr;
+             o_FGSCPresent = nullptr;
+             o_FGSCSetFullscreenState = nullptr;
+             o_FGSCGetFullscreenState = nullptr;
+@@ -1367,11 +1485,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
+     {
+         xefg_swapchain_present_status_t status {};
+ 
+-        if (XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) xefgContext, &status) ==
+-            XEFG_SWAPCHAIN_RESULT_SUCCESS)
+-        {
++        const auto statusResult = XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) xefgContext, &status);
++        // Bounded diagnostic of the existing query; no extra SDK calls or rendering changes.
++        static std::atomic_uint statusLogCount {0};
++        if (status.isFrameGenEnabled && statusLogCount.fetch_add(1, std::memory_order_relaxed) < 16)
++            LOG_DEBUG("XeFG present status: api={}, framesPresented={}, frameGenResult={}, isFrameGenEnabled={}",
++                      (UINT) statusResult, status.framesPresented, (UINT) status.frameGenResult, status.isFrameGenEnabled);
++        if (statusResult == XEFG_SWAPCHAIN_RESULT_SUCCESS)
+             InputCommon::xefg_present_status(xefgFrameId, status.framesPresented);
+-        }
+     }
+ 
+     if (result == S_OK)
+@@ -1456,7 +1577,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
+ 
+     static bool skipReleaseChecks = false;
+ 
+-    if (skipReleaseChecks || State::Instance().currentFGSwapchain != This || State::Instance().isShuttingDown)
++    if (releasingOwnedFG || skipReleaseChecks || State::Instance().currentFGSwapchain != This || State::Instance().isShuttingDown)
+         return o_FGRelease(This);
+ 
+     This->AddRef();
+@@ -1465,6 +1586,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
+     {
+         if (o_FGRelease(This) == 1)
+         {
++            ffxClearUiPacket_Dx12FG(static_cast<IDXGISwapChain*>(This), "final SDK proxy release");
+             LOG_DEBUG("");
+ 
+             if (State::Instance().currentCommandQueue != nullptr && resizeFence != nullptr &&
+diff --git a/OptiScaler/hooks/FG_Hooks.h b/OptiScaler/hooks/FG_Hooks.h
+index 6da5b766..2e263234 100644
+--- a/OptiScaler/hooks/FG_Hooks.h
++++ b/OptiScaler/hooks/FG_Hooks.h
+@@ -24,6 +24,11 @@ class FGHooks
+     static void ClearDx12InteropPresentSC(IUnknown* pSwapChain);
+     static bool IsDx12InteropPresentSC(IUnknown* pSwapChain);
+ 
++    // Diagnostic ownership bridge: a constructor-time reference to ReShade's API-visible outer proxy.
++    static IDXGISwapChain4* TakeCapturedFGSwapchain(IDXGISwapChain* expectedSdkSwapchain);
++    static void ReleaseCapturedFGSwapchain();
++    static void ReleaseOwnedFGSwapchain(IDXGISwapChain4* visible, IDXGISwapChain* sdkSwapchain);
++
+   private:
+     using PFN_Present = rewrite_signature<decltype(&IDXGISwapChain::Present)>::type;
+     using PFN_Present1 = rewrite_signature<decltype(&IDXGISwapChain1::Present1)>::type;
+@@ -35,6 +40,7 @@ class FGHooks
+     using PFN_ResizeTarget = rewrite_signature<decltype(&IDXGISwapChain::ResizeTarget)>::type;
+     using PFN_GetFrameLatencyWaitableObject =
+         rewrite_signature<decltype(&IDXGISwapChain2::GetFrameLatencyWaitableObject)>::type;
++    using PFN_SetPrivateData = rewrite_signature<decltype(&IDXGIObject::SetPrivateData)>::type;
+     using PFN_Release = rewrite_signature<decltype(&IUnknown::Release)>::type;
+ 
+     inline static PFN_ResizeBuffers o_FGSCResizeBuffers = nullptr;
+@@ -45,6 +51,7 @@ class FGHooks
+     inline static PFN_GetFullscreenDesc o_FGSCGetFullscreenDesc = nullptr;
+     inline static PFN_Present o_FGSCPresent = nullptr;
+     inline static PFN_Present1 o_FGSCPresent1 = nullptr;
++    inline static PFN_SetPrivateData o_FGSetPrivateData = nullptr;
+     inline static PFN_Release o_FGRelease = nullptr;
+     inline static PFN_GetFrameLatencyWaitableObject o_FGSCGetFrameLatencyWaitableObject = nullptr;
+     inline static HWND _hwnd = nullptr;
+@@ -70,6 +77,7 @@ class FGHooks
+                                     DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask,
+                                     IUnknown* const* ppPresentQueue);
+     static ULONG hkFGRelease(IUnknown* This);
++    static HRESULT hkFGSetPrivateData(IDXGIObject* This, REFGUID Name, UINT DataSize, const void* pData);
+ 
+     static HRESULT hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags);
+     static HRESULT hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Flags,
+@@ -89,4 +97,5 @@ class FGHooks
+     VALIDATE_MEMBER_HOOK(hkResizeTarget, PFN_ResizeTarget)
+     VALIDATE_MEMBER_HOOK(hkGetFrameLatencyWaitableObject, PFN_GetFrameLatencyWaitableObject)
+     VALIDATE_MEMBER_HOOK(hkFGRelease, PFN_Release)
++    VALIDATE_MEMBER_HOOK(hkFGSetPrivateData, PFN_SetPrivateData)
+ };
+diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
+index b303eebd..61d67b0a 100644
+--- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
++++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
+@@ -1,9 +1,20 @@
+ #include "pch.h"
+ 
+ #include "FfxApi_Dx12_FG.h"
++#include "oxp3_ffx_ui_packet.h"
++#include <atomic>
++#include <new>
+ 
+ #include <Util.h>
+ #include <Config.h>
++#include <hooks/FG_Hooks.h>
++#include <framegen/xefg/XeFG_NativeD3D12.h>
++#include <framegen/xefg/XeFG_Dx12.h>
++#include <wrl/client.h>
++#include <memory>
++#include <mutex>
++#include <unordered_map>
++#include <array>
+ #include <misc/DeferredRelease.h>
+ 
+ #include <magic_enum.hpp>
+@@ -64,7 +75,284 @@ struct ffxDispatchDescFrameGenerationPrepareV2
+     float cameraForward[3];  ///< The camera forward normalized vector in world space
+ };
+ 
++namespace
++{
++using Microsoft::WRL::ComPtr;
++const GUID kReShadeUnwrappedQueue = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81,0x2f,0x5e,0x9c,0xd3,0x7a,0x1b,0x42}};
++const GUID kStreamlineUnwrappedQueue = {0xadec44e2, 0x61f0, 0x45c3, {0xad,0x9f,0x1b,0x37,0x37,0x92,0x84,0xff}};
++
++struct OwnedFfxSwapchain
++{
++    IDXGISwapChain4* visible = nullptr; // exactly one context-owned reference
++    IDXGISwapChain* sdk = nullptr; // borrowed identity kept alive by visible
++    void* sdkContext = nullptr;
++    ~OwnedFfxSwapchain() { FGHooks::ReleaseOwnedFGSwapchain(visible, sdk); }
++};
++std::mutex ownedFfxMutex;
++std::unordered_map<ffxContext, std::shared_ptr<OwnedFfxSwapchain>> ownedFfxSwapchains;
++
++std::shared_ptr<OwnedFfxSwapchain> FindOwnedFfx(ffxContext* context)
++{
++    if (context == nullptr || *context == nullptr) return {};
++    std::lock_guard lock(ownedFfxMutex);
++    const auto it = ownedFfxSwapchains.find(*context);
++    return it == ownedFfxSwapchains.end() ? nullptr : it->second;
++}
++
++ComPtr<IUnknown> CanonicalQueue(IUnknown* object)
++{
++    ComPtr<IUnknown> current = object;
++    // QI owns each temporary; support both current ReShade and Streamline proxies.
++    for (unsigned depth = 0; current != nullptr && depth < 8; ++depth)
++    {
++        ComPtr<IUnknown> next;
++        if (FAILED(current->QueryInterface(kReShadeUnwrappedQueue, (void**)next.GetAddressOf())) || next == nullptr)
++        {
++            next.Reset();
++            current->QueryInterface(kStreamlineUnwrappedQueue, (void**)next.GetAddressOf());
++        }
++        if (next == nullptr) break;
++        ComPtr<IUnknown> a, b;
++        current.As(&a);
++        next.As(&b);
++        if (a.Get() == b.Get()) break;
++        current = std::move(next);
++        if (depth == 7) return {}; // malformed/deep proxy chain: fail closed
++    }
++    ComPtr<IUnknown> identity;
++    if (current != nullptr) current.As(&identity);
++    return identity;
++}
++
++bool SameRatio(const DXGI_RATIONAL& a, const DXGI_RATIONAL& b)
++{
++    if (a.Numerator == 0 || b.Numerator == 0) return a.Numerator == b.Numerator;
++    return a.Denominator != 0 && b.Denominator != 0 &&
++        uint64_t(a.Numerator) * b.Denominator == uint64_t(b.Numerator) * a.Denominator;
++}
++
++// ReShade reconstructs a modified HWND DESC1 from legacy _orig_desc and loses
++// AlphaMode, returning UNSPECIFIED even for the game's opaque IGNORE chain.
++// Normalize only that one-way pair for a non-layered/non-composition HWND, and
++// confirm the native SDK chain itself has no explicit transparency semantics.
++bool SameOpaqueHwndAlpha(DXGI_ALPHA_MODE requested, DXGI_ALPHA_MODE visible, HWND hwnd, IDXGISwapChain* sdk)
++{
++    if (requested == visible) return true;
++    if (requested != DXGI_ALPHA_MODE_IGNORE || visible != DXGI_ALPHA_MODE_UNSPECIFIED || !IsWindow(hwnd))
++        return false;
++    SetLastError(ERROR_SUCCESS);
++    const auto exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
++    if ((exStyle == 0 && GetLastError() != ERROR_SUCCESS) ||
++        (exStyle & (WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP)) != 0)
++        return false;
++    ComPtr<IDXGISwapChain1> native;
++    DXGI_SWAP_CHAIN_DESC1 nativeDesc {};
++    HWND nativeHwnd = nullptr;
++    if (sdk == nullptr || FAILED(sdk->QueryInterface(IID_PPV_ARGS(native.GetAddressOf()))) ||
++        FAILED(native->GetHwnd(&nativeHwnd)) || nativeHwnd != hwnd || FAILED(native->GetDesc1(&nativeDesc)) ||
++        (nativeDesc.AlphaMode != DXGI_ALPHA_MODE_IGNORE && nativeDesc.AlphaMode != DXGI_ALPHA_MODE_UNSPECIFIED))
++        return false;
++    LOG_DEBUG("GTA opaque HWND alpha normalized: requested IGNORE, ReShade UNSPECIFIED, native={}",
++              (UINT)nativeDesc.AlphaMode);
++    return true;
++}
++
++bool SameVisibleDesc(const DXGI_SWAP_CHAIN_DESC1& requested, const DXGI_SWAP_CHAIN_DESC1& actual, HWND hwnd, IDXGISwapChain* sdk)
++{
++    UINT width = requested.Width, height = requested.Height;
++    if (width == 0 || height == 0)
++    {
++        RECT client {};
++        if (!GetClientRect(hwnd, &client) || client.right <= client.left || client.bottom <= client.top) return false;
++        if (width == 0) width = client.right - client.left;
++        if (height == 0) height = client.bottom - client.top;
++    }
++    const bool same = width == actual.Width && height == actual.Height && requested.Format == actual.Format &&
++        requested.Stereo == actual.Stereo && requested.SampleDesc.Count == actual.SampleDesc.Count &&
++        requested.SampleDesc.Quality == actual.SampleDesc.Quality && requested.BufferUsage == actual.BufferUsage &&
++        requested.BufferCount == actual.BufferCount && requested.Scaling == actual.Scaling &&
++        requested.SwapEffect == actual.SwapEffect && SameOpaqueHwndAlpha(requested.AlphaMode, actual.AlphaMode, hwnd, sdk) && requested.Flags == actual.Flags;
++    if (!same)
++        LOG_WARN("GTA adoption descriptor mismatch req={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}; visible={}x{} fmt={} stereo={} samples={}/{} usage={} count={} scaling={} effect={} alpha={} flags={:X}",
++            width, height, (UINT)requested.Format, requested.Stereo, requested.SampleDesc.Count, requested.SampleDesc.Quality,
++            requested.BufferUsage, requested.BufferCount, (UINT)requested.Scaling, (UINT)requested.SwapEffect, (UINT)requested.AlphaMode, requested.Flags,
++            actual.Width, actual.Height, (UINT)actual.Format, actual.Stereo, actual.SampleDesc.Count, actual.SampleDesc.Quality,
++            actual.BufferUsage, actual.BufferCount, (UINT)actual.Scaling, (UINT)actual.SwapEffect, (UINT)actual.AlphaMode, actual.Flags);
++    return same;
++}
++
++ffxReturnCode_t TryAdoptGtaSwapchain(ffxContext* context, ffxCreateContextDescHeader* header,
++    IDXGISwapChain4** output, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& requested,
++    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen, ID3D12CommandQueue* queue)
++{
++    auto& state = State::Instance();
++    auto fg = state.currentFG;
++    if (state.activeFgOutput != FGOutput::XeFG || state.activeFgInput != FGInput::FSRFG ||
++        _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") != 0 ||
++        fg == nullptr || state.currentFGSwapchain == nullptr || fg->Hwnd() != hwnd)
++        return PASSTHRU_RETURN_CODE;
++
++    auto reject = [](const char* reason)
++    {
++        LOG_ERROR("GTA FFX swapchain adoption rejected: {}; existing chain left intact", reason);
++        return FFX_API_RETURN_ERROR_PARAMETER;
++    };
++    if (context == nullptr || output == nullptr || queue == nullptr || fg->SwapchainContext() == nullptr)
++        return reject("invalid output, queue, or SDK context");
++    // Only the known ABI-version extension is meaningful to this emulated provider.
++    unsigned nextCount = 0;
++    for (auto next = header->pNext; next != nullptr; next = next->pNext)
++    {
++        struct VersionDesc { ffxCreateContextDescHeader header; uint32_t version; };
++        if (++nextCount > 8 || next->type != 0x3000B)
++            return reject("unsupported create extension");
++        const auto version = reinterpret_cast<VersionDesc*>(next)->version;
++        if (!((version >= ((3u << 22) | (1u << 12) | 5u) && version <= ((3u << 22) | (1u << 12) | 7u)) ||
++              version == (4u << 22)))
++            return reject("unsupported swapchain ABI version");
++    }
++    auto requestedQueue = CanonicalQueue(queue);
++    auto existingQueue = CanonicalQueue(fg->GetCommandQueue());
++    if (requestedQueue == nullptr || existingQueue == nullptr || requestedQueue.Get() != existingQueue.Get())
++        return reject("command queue identity differs");
++
++    const auto sdk = state.currentFGSwapchain;
++    auto lease = std::make_shared<OwnedFfxSwapchain>();
++    lease->visible = FGHooks::TakeCapturedFGSwapchain(sdk);
++    lease->sdk = sdk;
++    lease->sdkContext = fg->SwapchainContext();
++    if (lease->visible == nullptr) return reject("no constructor-owned ReShade outer reference");
++    HWND visibleHwnd = nullptr;
++    DXGI_SWAP_CHAIN_DESC1 actual {};
++    DXGI_SWAP_CHAIN_DESC original {};
++    if (FAILED(lease->visible->GetHwnd(&visibleHwnd)) || visibleHwnd != hwnd ||
++        FAILED(lease->visible->GetDesc1(&actual)) || FAILED(lease->visible->GetDesc(&original)))
++        return reject("unable to query API-visible descriptor");
++    // ReShade preserves the application's descriptor before RenoDX upgrades its native HDR format.
++    if (!SameVisibleDesc(requested, actual, hwnd, sdk)) return reject("API-visible descriptors differ");
++    const bool wantsWindowed = fullscreen == nullptr || fullscreen->Windowed;
++    if (bool(original.Windowed) != wantsWindowed) return reject("fullscreen/windowed mode differs");
++    if (!wantsWindowed)
++    {
++        DXGI_SWAP_CHAIN_FULLSCREEN_DESC actualFullscreen {};
++        if (FAILED(lease->visible->GetFullscreenDesc(&actualFullscreen)) ||
++            !SameRatio(fullscreen->RefreshRate, actualFullscreen.RefreshRate) ||
++            fullscreen->ScanlineOrdering != actualFullscreen.ScanlineOrdering ||
++            fullscreen->Scaling != actualFullscreen.Scaling)
++            return reject("fullscreen timing differs");
++    }
++    if (state.currentFGSwapchain != sdk || fg->SwapchainContext() != lease->sdkContext)
++        return reject("SDK context changed during validation");
++    // NEW/FOR_HWND own no old caller reference. Return one new caller reference and
++    // keep the constructor capture as a separate context-owned lease, like native FFX.
++    lease->visible->AddRef();
++    *output = lease->visible;
++    *context = reinterpret_cast<ffxContext>(lease.get());
++    {
++        std::lock_guard lock(ownedFfxMutex);
++        ownedFfxSwapchains.emplace(*context, lease);
++    }
++    ffxBeginUiPacketSession_Dx12FG(sdk);
++    LOG_INFO("GTA FFX adopted API-visible ReShade outer {:X}, SDK {:X}, context {:X}; no recreation or caller Release",
++             (size_t)*output, (size_t)sdk, (size_t)*context);
++    return FFX_API_RETURN_OK;
++}
++} // namespace
++
++bool ffxIsOwnedSwapchainContext_Dx12FG(ffxContext* context) { return FindOwnedFfx(context) != nullptr; }
++bool ffxOwnedSwapchainContextIsCurrent_Dx12FG(ffxContext* context)
++{
++    const auto lease = FindOwnedFfx(context);
++    const auto& state = State::Instance();
++    return lease != nullptr && state.currentFG != nullptr && state.activeFgOutput == FGOutput::XeFG &&
++        state.currentFGSwapchain == lease->sdk && state.currentFG->SwapchainContext() == lease->sdkContext;
++}
++
+ static ID3D12Device* _device = nullptr;
++
++// Observational GTA-only probe. No pixel reads, clone lookup/creation, state
++// transitions or persistent COM leases; at most 16 distinct UI resource/flag pairs.
++static void ProbeFfxUiResource(const char* site, const FfxApiResource& ui, uint32_t flags,
++                               IFGFeature_Dx12* fg, uint64_t frameId, int frameIndex = -1)
++{
++    if (fg == nullptr || _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") != 0)
++        return;
++    struct Key { uintptr_t resource; uint32_t flags; };
++    static std::mutex probeMutex;
++    static std::array<Key, 16> seen {};
++    static size_t count = 0;
++    size_t sequence = 0;
++    {
++        std::lock_guard lock(probeMutex);
++        const Key key {reinterpret_cast<uintptr_t>(ui.resource), flags};
++        for (size_t i = 0; i < count; ++i)
++            if (seen[i].resource == key.resource && seen[i].flags == key.flags) return;
++        if (count == seen.size()) return;
++        seen[count++] = key;
++        sequence = count;
++    }
++    static_assert(FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA == 1u);
++    static_assert(FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING == 2u);
++    if (frameIndex < 0) frameIndex = fg->GetIndexWillBeDispatched();
++    if (frameIndex < 0) frameIndex = fg->GetIndex();
++    UINT64 rectWidth = 0;
++    UINT rectHeight = 0, rectLeft = 0, rectTop = 0;
++    fg->GetInterpolationRect(rectWidth, rectHeight, frameIndex);
++    fg->GetInterpolationPos(rectLeft, rectTop, frameIndex);
++    LOG_INFO("UI_PROBE {} site={} frame={} index={} resource={:X} uiFlags={:X} premult={} doubleBuffered={} FFX:type={} format={} size={}x{}x{} mips={} flags={:X} usage={:X} state={:X} rect={},{},{}x{} captureDisabled={} manualDraw={}",
++             sequence, site, frameId, frameIndex, (size_t)ui.resource, flags,
++             (flags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA) != 0,
++             (flags & FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING) != 0,
++             ui.description.type, ui.description.format, ui.description.width, ui.description.height,
++             ui.description.depth, ui.description.mipCount, ui.description.flags, ui.description.usage, ui.state,
++             rectLeft, rectTop, rectWidth, rectHeight, Config::Instance()->FGDisableUI.value_or_default(),
++             Config::Instance()->FGDrawUIOverFG.value_or_default());
++    Microsoft::WRL::ComPtr<ID3D12Device> stateDevice = State::Instance().currentD3D12Device;
++    Microsoft::WRL::ComPtr<ID3D12Device> ffxDevice = _device;
++    auto nativeState = XeFGNative::Unwrap<ID3D12Device>(stateDevice.Get());
++    auto nativeFfx = stateDevice.Get() == ffxDevice.Get() ? nativeState : XeFGNative::Unwrap<ID3D12Device>(ffxDevice.Get());
++    LOG_INFO("UI_PROBE {} devices: feature={:X} FFXbackend={:X} FFXnative={:X} StateDevice={:X} StateNative={:X}",
++             sequence, (size_t)State::Instance().currentFeature, (size_t)ffxDevice.Get(), (size_t)nativeFfx.Get(),
++             (size_t)stateDevice.Get(), (size_t)nativeState.Get());
++    if (ui.resource != nullptr)
++    {
++        // The FFX caller owns a live ID3D12Resource for registration. Take only a
++        // temporary AddRef while querying its immutable native resource description.
++        Microsoft::WRL::ComPtr<ID3D12Resource> resource = static_cast<ID3D12Resource*>(ui.resource);
++        const auto desc = resource->GetDesc();
++        LOG_INFO("UI_PROBE {} actualUI: dimension={} DXGIformat={} size={}x{} depthOrArray={} mips={} samples={}/{} flags={:X}",
++                 sequence, (UINT)desc.Dimension, (UINT)desc.Format, desc.Width, desc.Height, desc.DepthOrArraySize,
++                 desc.MipLevels, desc.SampleDesc.Count, desc.SampleDesc.Quality, (UINT)desc.Flags);
++        Microsoft::WRL::ComPtr<ID3D12Device> owner;
++        const auto ownerResult = resource->GetDevice(IID_PPV_ARGS(owner.GetAddressOf()));
++        auto nativeOwner = XeFGNative::Unwrap<ID3D12Device>(owner.Get());
++        LOG_INFO("UI_PROBE {} UIowner: result={:X} device={:X} native={:X} sameFFXnative={} sameStateNative={}",
++                 sequence, (UINT)ownerResult, (size_t)owner.Get(), (size_t)nativeOwner.Get(),
++                 XeFGNative::SameIdentity(nativeOwner.Get(), nativeFfx.Get()),
++                 XeFGNative::SameIdentity(nativeOwner.Get(), nativeState.Get()));
++    }
++    auto sdk = State::Instance().currentFGSwapchain;
++    Microsoft::WRL::ComPtr<IDXGISwapChain3> chain;
++    if (sdk == nullptr || FAILED(sdk->QueryInterface(IID_PPV_ARGS(chain.GetAddressOf()))))
++    {
++        LOG_INFO("UI_PROBE {} actualBB: no current SDK swapchain", sequence);
++        return;
++    }
++    const auto index = chain->GetCurrentBackBufferIndex();
++    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
++    const auto result = chain->GetBuffer(index, IID_PPV_ARGS(buffer.GetAddressOf()));
++    if (FAILED(result) || buffer == nullptr)
++    {
++        LOG_INFO("UI_PROBE {} actualBB: GetBuffer index={} result={:X}", sequence, index, (UINT)result);
++        return;
++    }
++    const auto desc = buffer->GetDesc();
++    LOG_INFO("UI_PROBE {} actualBB: index={} DXGIformat={} size={}x{} samples={}/{} flags={:X}; Reno clone/transfer not inferred",
++             sequence, index, (UINT)desc.Format, desc.Width, desc.Height, desc.SampleDesc.Count,
++             desc.SampleDesc.Quality, (UINT)desc.Flags);
++    // buffer and chain references end here, before the intercepted configure call returns.
++}
++
+ static FG_Constants _fgConst {};
+ 
+ static FfxApiPresentCallbackFunc _presentCallback = nullptr;
+@@ -242,6 +530,245 @@ static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Reso
+     InCommandList->ResourceBarrier(1, &barrier);
+ }
+ 
++namespace
++{
++class FfxUiPacket final : public IOxp3FfxUiPacket
++{
++    std::atomic<ULONG> references {1};
++    const Oxp3FfxUiSnapshot snapshot;
++    const Microsoft::WRL::ComPtr<ID3D12Resource> resource;
++    const Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
++    ~FfxUiPacket() = default;
++  public:
++    FfxUiPacket(const Oxp3FfxUiSnapshot& value, Microsoft::WRL::ComPtr<ID3D12Resource> ui,
++                Microsoft::WRL::ComPtr<ID3D12CommandQueue> gameQueue)
++        : snapshot(value), resource(std::move(ui)), queue(std::move(gameQueue)) {}
++    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        if (iid != IID_IUnknown && iid != IID_IOxp3FfxUiPacket) return E_NOINTERFACE;
++        *output = static_cast<IOxp3FfxUiPacket*>(this);
++        AddRef();
++        return S_OK;
++    }
++    ULONG STDMETHODCALLTYPE AddRef() override { return references.fetch_add(1, std::memory_order_relaxed) + 1; }
++    ULONG STDMETHODCALLTYPE Release() override
++    {
++        const auto left = references.fetch_sub(1, std::memory_order_acq_rel) - 1;
++        if (left == 0) delete this;
++        return left;
++    }
++    HRESULT STDMETHODCALLTYPE GetSnapshot(Oxp3FfxUiSnapshot* output, uint32_t bytes) override
++    {
++        if (output == nullptr) return E_POINTER;
++        if (bytes < sizeof(snapshot)) return E_INVALIDARG;
++        *output = snapshot;
++        return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE AcquireUiResource(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        return resource == nullptr ? E_UNEXPECTED : resource->QueryInterface(iid, output);
++    }
++    HRESULT STDMETHODCALLTYPE AcquireCommandQueue(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        return queue == nullptr ? E_UNEXPECTED : queue->QueryInterface(iid, output);
++    }
++};
++
++struct UiPacketSession
++{
++    IDXGISwapChain* carrier = nullptr; // borrowed; lifecycle calls serialize before physical teardown
++    uint64_t generation = 1;
++    uint64_t publication = 0;
++    uint64_t frameId = 0;
++    uint64_t frameRevision = 0;
++    FfxApiRect2D rect {};
++    bool configured = false;
++    bool live = false;
++    bool interpolationEnabled = false;
++    bool published = false;
++    unsigned logCount = 0;
++};
++static std::mutex uiPacketMutex;
++static UiPacketSession uiPacketSession;
++
++static bool IsGtaUiBridge()
++{
++    return _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") == 0;
++}
++
++static void RecordUiPacketFrame(uint64_t frameId, const FfxApiRect2D& rect, bool interpolationEnabled)
++{
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    auto carrier = State::Instance().currentFGSwapchain;
++    // A frame update cannot revive a carrier that teardown has marked closed.
++    // Only an explicit physical/FFX session begin may establish a live carrier.
++    if (carrier == nullptr || carrier != uiPacketSession.carrier || !uiPacketSession.live) return;
++    ++uiPacketSession.frameRevision;
++    uiPacketSession.frameId = frameId;
++    uiPacketSession.rect = rect;
++    uiPacketSession.configured = carrier != nullptr;
++    uiPacketSession.interpolationEnabled = interpolationEnabled;
++}
++} // namespace
++
++namespace
++{
++// Requires uiPacketMutex. Physical teardown calls this before releasing its live
++// carrier; asynchronous publishers may clear only after matching their captured epoch.
++static void ClearUiPacketLocked(IDXGISwapChain* carrier, const char* reason, bool preserveFrame)
++{
++    if (carrier != nullptr && carrier == uiPacketSession.carrier && uiPacketSession.live)
++        carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++    if (carrier == nullptr || carrier == uiPacketSession.carrier)
++    {
++        if (uiPacketSession.published)
++            LOG_INFO("UI_PACKET clear: {} session={}", reason, uiPacketSession.generation);
++        if (!preserveFrame || carrier == nullptr || carrier != uiPacketSession.carrier)
++        {
++            uiPacketSession.carrier = nullptr;
++            uiPacketSession.configured = false;
++            uiPacketSession.live = false;
++        }
++        uiPacketSession.published = false;
++        uiPacketSession.logCount = 0;
++        ++uiPacketSession.generation;
++        ++uiPacketSession.frameRevision;
++    }
++}
++static void ClearFailedUiPublication(const UiPacketSession& registration, const char* reason)
++{
++    std::lock_guard lock(uiPacketMutex);
++    if (!uiPacketSession.live || registration.carrier != uiPacketSession.carrier ||
++        registration.generation != uiPacketSession.generation ||
++        registration.publication != uiPacketSession.publication)
++        return; // carrier may be gone, or a newer registration already won
++    ClearUiPacketLocked(registration.carrier, reason, true);
++}
++} // namespace
++
++void ffxClearUiPacket_Dx12FG(IDXGISwapChain* carrier, const char* reason, bool preserveFrame)
++{
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    ClearUiPacketLocked(carrier, reason, preserveFrame);
++}
++
++void ffxBeginUiPacketSession_Dx12FG(IDXGISwapChain* carrier)
++{
++    ffxClearUiPacket_Dx12FG(carrier, "new FFX/physical swapchain session");
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    uiPacketSession.carrier = carrier;
++    uiPacketSession.live = carrier != nullptr;
++}
++
++static void PublishFfxUiPacket(const FfxApiResource& ui, uint32_t flags, IFGFeature_Dx12* fg)
++{
++    if (!IsGtaUiBridge() || fg == nullptr) return;
++    auto carrier = State::Instance().currentFGSwapchain;
++    if (ui.resource == nullptr)
++    {
++        ffxClearUiPacket_Dx12FG(carrier, "null FFX UI registration", true);
++        return;
++    }
++    if (carrier == nullptr) return;
++    UiPacketSession registration;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> registrationQueue;
++    {
++        std::lock_guard lock(uiPacketMutex);
++        if (carrier != uiPacketSession.carrier || !uiPacketSession.live || !uiPacketSession.configured) return;
++        // Use fg only at the existing FFX callback entry. Own its queue before any
++        // subsequent COM query can delay; never dereference fg after that delay.
++        auto* xefg = dynamic_cast<XeFG_Dx12*>(fg); // virtual IFG base: use checked RTTI, never static downcast
++        if (xefg == nullptr) return;
++        registrationQueue = xefg->AcquireUiPresentationQueue();
++        ++uiPacketSession.publication;
++        registration = uiPacketSession;
++    }
++    // Only resource/queue references cross the ABI. The packet never owns its
++    // carrier swapchain, so attaching it cannot create a swapchain reference cycle.
++    Microsoft::WRL::ComPtr<ID3D12Resource> original;
++    if (FAILED(static_cast<IUnknown*>(ui.resource)->QueryInterface(IID_PPV_ARGS(original.GetAddressOf()))) || original == nullptr)
++    {
++        ClearFailedUiPublication(registration, "UI resource QI failed");
++        return;
++    }
++    auto nativeResource = XeFGNative::Unwrap<ID3D12Resource>(original.Get());
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(registrationQueue.Get());
++    Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
++    if (nativeResource == nullptr || nativeQueue == nullptr ||
++        nativeQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
++        FAILED(nativeQueue->GetDevice(IID_PPV_ARGS(queueDevice.GetAddressOf()))) ||
++        !XeFGNative::MatchesDevice(nativeResource.Get(), queueDevice.Get()))
++    {
++        ClearFailedUiPublication(registration, "UI/queue native device mismatch");
++        return;
++    }
++    const auto actual = nativeResource->GetDesc();
++    if (actual.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || actual.Width > UINT32_MAX || actual.SampleDesc.Count != 1)
++    {
++        ClearFailedUiPublication(registration, "unsupported UI resource description");
++        return;
++    }
++    std::lock_guard lock(uiPacketMutex);
++    if (carrier != uiPacketSession.carrier || carrier != State::Instance().currentFGSwapchain ||
++        registration.generation != uiPacketSession.generation || !uiPacketSession.live ||
++        registration.frameRevision != uiPacketSession.frameRevision ||
++        registration.publication != uiPacketSession.publication || !uiPacketSession.configured)
++        return;
++    Oxp3FfxUiSnapshot value {};
++    value.magic = OXP3_FFX_UI_MAGIC;
++    value.version = OXP3_FFX_UI_VERSION;
++    value.byteSize = sizeof(value);
++    value.active = 1; // UI composition can still be needed while interpolation is paused/disabled.
++    value.session = registration.generation;
++    value.frameId = registration.frameId;
++    value.publicationId = registration.publication;
++    value.uiFlags = flags;
++    value.ffxState = ui.state;
++    value.d3d12State = static_cast<uint32_t>(GetD3D12State(static_cast<FfxApiResourceState>(ui.state)));
++    value.ffxFormat = ui.description.format;
++    value.ffxType = ui.description.type;
++    value.width = static_cast<uint32_t>(actual.Width);
++    value.height = actual.Height;
++    value.mipCount = actual.MipLevels;
++    value.nativeDxgiFormat = actual.Format;
++    value.rectLeft = registration.rect.left;
++    value.rectTop = registration.rect.top;
++    value.rectWidth = registration.rect.width;
++    value.rectHeight = registration.rect.height;
++    value.declaredWidth = ui.description.width;
++    value.declaredHeight = ui.description.height;
++    value.declaredFlags = ui.description.flags;
++    value.declaredUsage = ui.description.usage;
++    value.interpolationEnabled = registration.interpolationEnabled;
++    Microsoft::WRL::ComPtr<IOxp3FfxUiPacket> packet;
++    packet.Attach(new (std::nothrow) FfxUiPacket(value, std::move(original), std::move(nativeQueue)));
++    if (packet == nullptr)
++    {
++        carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++        uiPacketSession.published = false;
++        return;
++    }
++    // Serialize attachment with the lifecycle clears. Packet methods and its
++    // destructor never acquire uiPacketMutex; no borrowed UI pointer is retained.
++    const auto result = carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, packet.Get());
++    uiPacketSession.published = SUCCEEDED(result);
++    if (FAILED(result)) carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++    if (uiPacketSession.logCount++ < 8)
++        LOG_INFO("UI_PACKET publish session={} publication={} frame={} carrier={:X} format={} size={}x{} flags={:X} ffxState={:X} nativeState={:X} interpolation={} result={:X}",
++                 value.session, value.publicationId, value.frameId, (size_t)carrier, value.nativeDxgiFormat,
++                 value.width, value.height, value.uiFlags, value.ffxState, value.d3d12State,
++                 value.interpolationEnabled, (UINT)result);
++}
++
+ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDescHeader* desc,
+                                         const ffxAllocationCallbacks* memCb)
+ {
+@@ -316,6 +843,7 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+             s.currentFG->CreateContext(_device, _fgConst);
+ 
+             *context = (ffxContext) fgContext;
++            ffxBeginUiPacketSession_Dx12FG(s.currentFGSwapchain);
+             return FFX_API_RETURN_OK;
+         }
+     }
+@@ -339,6 +867,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+     {
+         auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainNewDX12*) desc;
+ 
++        if (cDesc->desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        DXGI_SWAP_CHAIN_DESC1 adoptDesc {};
++        adoptDesc.Width = cDesc->desc->BufferDesc.Width;
++        adoptDesc.Height = cDesc->desc->BufferDesc.Height;
++        adoptDesc.Format = cDesc->desc->BufferDesc.Format;
++        adoptDesc.SampleDesc = cDesc->desc->SampleDesc;
++        adoptDesc.BufferUsage = cDesc->desc->BufferUsage;
++        adoptDesc.BufferCount = cDesc->desc->BufferCount;
++        adoptDesc.Scaling = cDesc->desc->BufferDesc.Scaling == DXGI_MODE_SCALING_CENTERED ?
++            DXGI_SCALING_ASPECT_RATIO_STRETCH : DXGI_SCALING_STRETCH;
++        adoptDesc.SwapEffect = cDesc->desc->SwapEffect;
++        adoptDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
++        adoptDesc.Flags = cDesc->desc->Flags;
++        DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen {};
++        fullscreen.RefreshRate = cDesc->desc->BufferDesc.RefreshRate;
++        fullscreen.ScanlineOrdering = cDesc->desc->BufferDesc.ScanlineOrdering;
++        fullscreen.Scaling = cDesc->desc->BufferDesc.Scaling;
++        fullscreen.Windowed = cDesc->desc->Windowed;
++        const auto adopted = TryAdoptGtaSwapchain(context, desc, cDesc->swapchain,
++            cDesc->desc->OutputWindow, adoptDesc, &fullscreen, cDesc->gameQueue);
++        if (adopted != PASSTHRU_RETURN_CODE) return adopted;
++
+         if (State::Instance().currentWrappedSwapchain != nullptr &&
+             State::Instance().currentSwapchainDesc.OutputWindow == cDesc->desc->OutputWindow)
+         {
+@@ -381,6 +931,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+     {
+         auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*) desc;
+ 
++        if (cDesc->desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        const auto adopted = TryAdoptGtaSwapchain(context, desc, cDesc->swapchain,
++            cDesc->hwnd, *cDesc->desc, cDesc->fullscreenDesc, cDesc->gameQueue);
++        if (adopted != PASSTHRU_RETURN_CODE) return adopted;
++
+         IDXGIFactory2* factory = nullptr;
+         auto scResult = cDesc->dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
+ 
+@@ -439,8 +994,29 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+ 
+     LOG_DEBUG("");
+ 
++    std::shared_ptr<OwnedFfxSwapchain> owned;
++    if (context != nullptr)
++    {
++        std::lock_guard lock(ownedFfxMutex);
++        const auto it = ownedFfxSwapchains.find(*context);
++        if (it != ownedFfxSwapchains.end())
++        {
++            owned = std::move(it->second);
++            ownedFfxSwapchains.erase(it);
++            *context = nullptr;
++        }
++    }
++    if (owned != nullptr)
++    {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "owned FFX swapchain context destroyed");
++        LOG_INFO("GTA destroying owned FFX swapchain lease {:X}; preserving SDK context", (size_t)owned.get());
++        owned.reset(); // release exactly the context-owned outer reference, outside registry lock
++        return FFX_API_RETURN_OK;
++    }
++
+     if (State::Instance().currentFG != nullptr && (void*) scContext == *context)
+     {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "FFX swapchain context destroyed");
+         LOG_INFO("Destroying Swapchain Context: {:X}", (size_t) State::Instance().currentFG);
+         State::Instance().currentFG->ReleaseSwapchain(State::Instance().currentFG->Hwnd());
+ 
+@@ -461,6 +1037,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+     }
+     else if (State::Instance().currentFG != nullptr && (void*) fgContext == *context)
+     {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "FFX frame-generation context destroyed");
+         LOG_INFO("Destroying FG Context: {:X}", (size_t) State::Instance().currentFG);
+         State::Instance().currentFG->DestroyFGContext();
+         ReleaseBuffers();
+@@ -517,6 +1094,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+     if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION)
+     {
+         auto cDesc = (ffxConfigureDescFrameGeneration*) desc;
++        RecordUiPacketFrame(cDesc->frameID, cDesc->generationRect, cDesc->frameGenerationEnabled);
+ 
+         CheckForFrame(fg, cDesc->frameID);
+         fg->SetFrameCount(cDesc->frameID);
+@@ -592,6 +1170,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+             {
+                 auto crDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) next;
+                 LOG_DEBUG("UiResource found 1: {:X}", (size_t) crDesc->uiResource.resource);
++                ProbeFfxUiResource("configure-pNext", crDesc->uiResource, crDesc->flags, fg, cDesc->frameID, fIndex);
++                PublishFfxUiPacket(crDesc->uiResource, crDesc->flags, fg);
+ 
+                 if (fg->FrameGenerationContext() != nullptr && crDesc->uiResource.resource != nullptr)
+                 {
+@@ -722,6 +1302,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+                 {
+                     auto uiDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) next;
+                     LOG_DEBUG("UiResource found 2: {:X}", (size_t) uiDesc->uiResource.resource);
++                    ProbeFfxUiResource("distortion-pNext", uiDesc->uiResource, uiDesc->flags, fg, fg->FrameCount());
++                    PublishFfxUiPacket(uiDesc->uiResource, uiDesc->flags, fg);
+ 
+                     if (fg->FrameGenerationContext() != nullptr && uiDesc->uiResource.resource != nullptr)
+                     {
+@@ -778,6 +1360,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+     {
+         auto crDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) desc;
+         LOG_DEBUG("UiResource found 3: {:X}", (size_t) crDesc->uiResource.resource);
++        ProbeFfxUiResource("ui-direct", crDesc->uiResource, crDesc->flags, fg, fg->FrameCount());
++        PublishFfxUiPacket(crDesc->uiResource, crDesc->flags, fg);
+ 
+         if (fg->FrameGenerationContext() != nullptr && crDesc->uiResource.resource != nullptr)
+         {
+diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
+index 98259afa..8d6d10a7 100644
+--- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
++++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
+@@ -14,3 +14,11 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+ ffxReturnCode_t ffxQuery_Dx12FG(ffxContext* context, ffxQueryDescHeader* desc);
+ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* desc);
+ void ffxPresentCallback();
++
++// Owned diagnostic contexts are recognized before any native-provider fallback.
++bool ffxIsOwnedSwapchainContext_Dx12FG(ffxContext* context);
++bool ffxOwnedSwapchainContextIsCurrent_Dx12FG(ffxContext* context);
++
++struct IDXGISwapChain;
++void ffxBeginUiPacketSession_Dx12FG(IDXGISwapChain* carrier);
++void ffxClearUiPacket_Dx12FG(IDXGISwapChain* carrier, const char* reason, bool preserveFrame = false);
+diff --git a/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h b/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h
+new file mode 100644
+index 00000000..88ebd07c
+--- /dev/null
++++ b/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h
+@@ -0,0 +1,68 @@
++#pragma once
++
++// OXP3 GTA FFX UI bridge, ABI v1. MIT; copyright (c) 2026 Grippy98.
++// Producer: OptiScaler. Consumer: the maintained GTA RenoDX addon.
++#include <unknwn.h>
++#include <cstdint>
++
++inline constexpr uint32_t OXP3_FFX_UI_MAGIC = 0x4955584f; // little-endian "OXUI"
++inline constexpr uint32_t OXP3_FFX_UI_VERSION = 1;
++inline constexpr uint32_t OXP3_FFX_UI_PREMULTIPLIED = 1;
++inline constexpr uint32_t OXP3_FFX_UI_DOUBLE_BUFFERED = 2;
++
++// IDXGIObject::SetPrivateDataInterface property; GetPrivateData returns an AddRef'd IUnknown.
++inline constexpr GUID OXP3_FFX_UI_PACKET_PROPERTY =
++    {0x8e5b201f, 0x8e48, 0x49c4, {0xb3,0x51,0x88,0x55,0xd3,0xe5,0x42,0x96}};
++inline constexpr GUID IID_IOxp3FfxUiPacket =
++    {0xb53df145, 0xdc25, 0x4c89, {0x9b,0x86,0x3e,0xd2,0x41,0x87,0x65,0x61}};
++
++#pragma pack(push, 8)
++struct Oxp3FfxUiSnapshot
++{
++    uint32_t magic;
++    uint32_t version;
++    uint32_t byteSize;
++    uint32_t active; // live nonnull UI registration; independent of interpolationEnabled
++    uint64_t session;
++    uint64_t frameId; // FFX's frame ID, not Opti's resettable local frame count
++    uint32_t uiFlags;
++    uint32_t ffxState;
++    uint32_t ffxFormat;
++    uint32_t ffxType;
++    uint32_t width; // actual native UI resource width/height
++    uint32_t height;
++    uint32_t mipCount;
++    uint32_t nativeDxgiFormat;
++    int32_t rectLeft;
++    int32_t rectTop;
++    uint32_t rectWidth;
++    uint32_t rectHeight;
++    uint32_t declaredWidth;
++    uint32_t declaredHeight;
++    uint32_t declaredFlags;
++    uint32_t declaredUsage;
++    uint32_t d3d12State; // converted native state; ffxState is a DIFFERENT enum
++    uint32_t interpolationEnabled; // latest FFX request; false can still require UI on the real frame
++    uint64_t publicationId; // monotonic UI-registration serial, independent of repeated/reset FFX frame IDs
++};
++#pragma pack(pop)
++static_assert(sizeof(Oxp3FfxUiSnapshot) == 112);
++
++struct __declspec(uuid("b53df145-dc25-4c89-9b86-3ed241876561")) IOxp3FfxUiPacket : IUnknown
++{
++    virtual HRESULT STDMETHODCALLTYPE GetSnapshot(Oxp3FfxUiSnapshot* output, uint32_t outputBytes) = 0;
++    // Successful Acquire calls return a caller-owned QI reference; no borrowed pointer crosses this ABI.
++    virtual HRESULT STDMETHODCALLTYPE AcquireUiResource(REFIID iid, void** output) = 0;
++    virtual HRESULT STDMETHODCALLTYPE AcquireCommandQueue(REFIID iid, void** output) = 0;
++};
++
++// AcquireUiResource returns the original API-visible resource. The consumer must
++// resolve a native resource identity (e.g. supported ReShade unwrap QI) before
++// querying Reno tracking; pointer equality across wrappers must not be assumed.
++// Packet metadata is immutable. It owns the registered UI allocation and the native
++// game/presentation queue, never the swapchain. Content validity is UntilPresent:
++// the consumer must use the newest session/publicationId once on the same native queue,
++// before forwarding that real-frame Present to XeFG. A COM reference alone does
++// not reserve UI contents. Consumers must reject stale/repeated/mismatched packets.
++// Producer clears the property on UI null, actual FFX context destruction and physical
++// swapchain teardown. Transient SDK deactivation/paused interpolation is not UI teardown. Retained consumer GPU leases must retire via queue fences.
+diff --git a/OptiScaler/inputs/FfxApi_Dx12.cpp b/OptiScaler/inputs/FfxApi_Dx12.cpp
+index cff0d085..4c966472 100644
+--- a/OptiScaler/inputs/FfxApi_Dx12.cpp
++++ b/OptiScaler/inputs/FfxApi_Dx12.cpp
+@@ -307,7 +307,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12(ffxContext* context, const ffxAllocationC
+ 
+     LOG_DEBUG("context: {:X}", (size_t) *context);
+ 
+-    if (*context == (void*) scContext || *context == (void*) fgContext)
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context) || *context == (void*) scContext || *context == (void*) fgContext)
+     {
+         auto result = ffxDestroyContext_Dx12FG(context, memCb);
+ 
+@@ -359,6 +359,23 @@ ffxReturnCode_t ffxDestroyContext_Dx12(ffxContext* context, const ffxAllocationC
+ 
+ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxConfigure_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain configure rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     if (desc == nullptr)
+         return FFX_API_RETURN_ERROR_PARAMETER;
+ 
+@@ -398,6 +415,23 @@ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* d
+ 
+ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxQuery_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain query rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     LOG_DEBUG("");
+ 
+     if (desc == nullptr)
+@@ -562,6 +596,23 @@ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
+ 
+ ffxReturnCode_t ffxDispatch_Dx12(ffxContext* context, ffxDispatchDescHeader* desc)
+ {
++    if (ffxIsOwnedSwapchainContext_Dx12FG(context))
++    {
++        if (desc == nullptr) return FFX_API_RETURN_ERROR_PARAMETER;
++        if (!ffxOwnedSwapchainContextIsCurrent_Dx12FG(context))
++        {
++            LOG_ERROR("GTA owned FFX swapchain lease refers to a different SDK context");
++            return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
++        }
++        const auto result = ffxDispatch_Dx12FG(context, desc);
++        if (result == PASSTHRU_RETURN_CODE)
++        {
++            LOG_ERROR("GTA owned FFX swapchain dispatch rejects unsupported type {:X}; no native fallback", desc->type);
++            return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
++        }
++        return result;
++    }
++
+     if (desc == nullptr || context == nullptr)
+         return FFX_API_RETURN_ERROR_PARAMETER;
+ 
+diff --git a/OptiScaler/low_latency/input/input_xell.cpp b/OptiScaler/low_latency/input/input_xell.cpp
+index 41384d05..92e561d1 100644
+--- a/OptiScaler/low_latency/input/input_xell.cpp
++++ b/OptiScaler/low_latency/input/input_xell.cpp
+@@ -148,6 +148,14 @@ xell_result_t InputXeLL::DestroyContext(xell_input_handle_t context)
+     if (!context)
+         return XELL_RESULT_ERROR_INVALID_CONTEXT;
+ 
++    if (context->inputContext.localContext && context->real != nullptr)
++    {
++        const auto result = XeLLProxy::RealDestroyContext()(context->real);
++        if (result != XELL_RESULT_SUCCESS)
++            return result; // keep local wrapper and its owner's native device reference alive
++        context->real = nullptr;
++    }
++
+     auto expected = context;
+     gameContext.compare_exchange_strong(expected, nullptr);
+     RemoveContext(context);
+diff --git a/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp b/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
+index 2cc70b1e..74855291 100644
+--- a/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
++++ b/OptiScaler/low_latency/low_latency_tech/ll_xell.cpp
+@@ -44,22 +44,33 @@ bool XeLL::init(IUnknown* pDevice)
+         return false;
+     }
+ 
+-    ID3D12Device* dx12_pDevice = nullptr;
+-    HRESULT hr = pDevice->QueryInterface(__uuidof(ID3D12Device), reinterpret_cast<void**>(&dx12_pDevice));
+-    if (hr != S_OK)
++    if (xell_context != nullptr)
++    {
++        LOG_ERROR("XeLL initialization refuses to overwrite a live SDK context");
+         return false;
++    }
++    auto device = XeFGNative::Unwrap<ID3D12Device>(pDevice);
++    if (device == nullptr) return false;
+ 
+-    // Created as OptiScaler's own, it goes straight to the real XeLL. Opti's XeFG gets it too.
+-    auto result = InputXeLL::D3D12CreateLocalContext(dx12_pDevice, (InputXeLL::xell_input_handle_t*) &xell_context) ==
++    // Only OptiScaler's own XeLL output is normalized here, so an already-active
++    // output reused by XeFG also has a native device. Game input objects are unchanged.
++    auto result = InputXeLL::D3D12CreateLocalContext(device.Get(), (InputXeLL::xell_input_handle_t*) &xell_context) ==
+                   XELL_RESULT_SUCCESS;
+-
++    if (result || xell_context != nullptr) native_device = std::move(device);
+     return result;
+ }
+ 
+ void XeLL::deinit()
+ {
+-    o_xellDestroyContext(xell_context);
+-    LOG_INFO("XeLL deinitialized");
++    if (xell_context == nullptr) return;
++    const auto result = o_xellDestroyContext(xell_context);
++    if (result == XELL_RESULT_SUCCESS)
++    {
++        xell_context = nullptr;
++        native_device.Reset();
++        LOG_INFO("XeLL deinitialized");
++    }
++    else LOG_ERROR("XeLL destroy failed; native device reference retained: {}", (UINT)result);
+ }
+ 
+ void* XeLL::get_tech_context() { return xell_context; }
+diff --git a/OptiScaler/low_latency/low_latency_tech/ll_xell.h b/OptiScaler/low_latency/low_latency_tech/ll_xell.h
+index 6890d93e..34e29c5e 100644
+--- a/OptiScaler/low_latency/low_latency_tech/ll_xell.h
++++ b/OptiScaler/low_latency/low_latency_tech/ll_xell.h
+@@ -6,6 +6,7 @@
+ #include "low_latency/input/input_xell.h"
+ #include <proxies/XeLL_Proxy.h>
+ #include "freefg_frame_pacer.h"
++#include <framegen/xefg/XeFG_NativeD3D12.h>
+ 
+ class XeLL : public LowLatencyTech
+ {
+@@ -14,6 +15,7 @@ class XeLL : public LowLatencyTech
+     uint64_t sleep_last_id {};
+ 
+     xell_context_handle_t xell_context {};
++    Microsoft::WRL::ComPtr<ID3D12Device> native_device;
+ 
+     // The sleep mode last sent to this context, the first one always goes out
+     uint32_t last_low_latency_mode = UINT32_MAX;
+@@ -55,6 +57,12 @@ class XeLL : public LowLatencyTech
+         }
+     }
+ 
++    ~XeLL() override
++    {
++        if (xell_context != nullptr)
++            native_device.Detach(); // failed/missing SDK destroy: retain its input until process teardown
++    }
++
+     // From LowLatencyTech
+     bool init(IUnknown* pDevice) override;
+     void deinit() override;

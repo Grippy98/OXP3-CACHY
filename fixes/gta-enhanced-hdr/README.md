@@ -1,6 +1,6 @@
 # GTA V Enhanced HDR
 
-**HDR with XeSS upscaling works in short Story Mode tests; keep frame generation off.** The documented profile reached gameplay on two cold starts. A paired OptiScaler/RenoDX HUD candidate now builds and reaches the normal HDR menu, but Story Mode HUD, map, phone, colors and motion checks are pending. Combined HDR/FG remains unqualified.
+**HDR, XeSS/XeFG and the HUD work in a short Story Mode test on the built-in 1920×1200 screen.** The owner confirmed normal colors and working HUD, map, phone and frame generation with the paired OptiScaler/RenoDX build. Use the [fixed HDR/FG/HUD profile](hud-bridge/README.md); cold starts, repeated toggles, resizing and longer play remain unqualified.
 
 RenoDX adds HDR to the tested PC build; this does not enable a native Rockstar HDR option. The private WSI backport remains a candidate: its necessity has not been isolated, and this profile has not yet been compared successfully with the stock WSI layer.
 
@@ -11,11 +11,13 @@ RenoDX adds HDR to the tested PC build; this does not enable a native Rockstar H
 - The [XeSS community setup](../xess-xmx-community/README.md), including its updated GTA launcher with `--hdr` support, and its private Mesa 26.3 driver. The tested package provides **26.3.0-rc3**; select it explicitly with `MESA=26.3`.
 - The official **vkd3d-proton 3.1 x64 Core only**, installed with the [per-game guide and checked installer](vkd3d/README.md). Preserve the original system32 `d3d12.dll` loader so ReShade keeps intercepting D3D12 device creation.
 - The private Gamescope 3.16.25 WSI build prepared with the [build guide](BUILDING.md).
-- [ReShade 6.8.0 with full add-on support](https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe), plus the [GTA V Enhanced RenoDX addon](https://clshortfuse.github.io/renodx/renodx-gtav-enhanced.addon64).
+- [ReShade 6.8.0 with full add-on support](https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe). Use the [matched OptiScaler/RenoDX pair](hud-bridge/README.md) for HDR/FG/HUD; the upstream [GTA RenoDX snapshot](https://clshortfuse.github.io/renodx/renodx-gtav-enhanced.addon64) belongs to the FG-off baseline.
 
 The repository contains source, instructions and provenance, not third-party binaries. [SOURCE.json](SOURCE.json) records exact versions and SHA-256 hashes. The RenoDX snapshot URL changes over time; a different hash requires a new review.
 
-## Reproduce the tested HDR/SR profile
+## Retained HDR/SR rollback baseline
+
+The steps below reproduce the earlier FG-off profile. The [fixed HDR/FG/HUD guide](hud-bridge/README.md) supplies the exact paired builds and settings for the accepted short test.
 
 Close GTA completely. Back up its Steam launch options, `OptiScaler.ini`, `settings.xml`, and any existing ReShade/RenoDX files before changing them.
 
@@ -67,7 +69,7 @@ ShowPresetTransitionMessage=0
 
 The Core-only profile retained the original system32 D3D12 loader and loaded the official 3.1 app-directory Core. ReShade/RenoDX initialized on D3D12, Gamescope reported application HDR, and fresh XeSS SR 2.0.2 initialization plus Story Mode gameplay were observed. The owner reported that it worked; a second cold start returned to Story Mode after frame generation was restored to Off. This is short-session HDR/SR validation, with no long-play or controlled-performance claim.
 
-**Combined HDR and frame generation remains unresolved.** An earlier Intel XeFG control reached stable, normal-color Story Mode with confirmed generated output, but omitted the separately registered HUD. The new paired candidate transports that UI through an owned COM packet and composes its live RenoDX clone during the final HDR pass. Both components compile, their bridge headers match, and 15 independent CPU math tests pass. The first menu has normal output with application HDR active; Story Mode visual validation is pending. See the [implementation and limits](WRITEUP.md#paired-renodx-hud-candidate) and [experimental source/build recipe](https://github.com/Grippy98/OXP3-CACHY/blob/9ef6afa813ce4d16d0ea706926ee21e0dec27b04/experiments/renodx-gta-ui/README.md). The FG-off installation recipe remains the working baseline.
+**The paired HDR/FG/HUD profile has a short owner-accepted Story Mode result.** HDR and colors looked normal, and the owner confirmed working HUD, map, phone and frame generation on the built-in 1920×1200 screen. Earlier native-interface controls had already confirmed successful interpolation with two frames sent to the presenter; that evidence is separate from the current paired visual acceptance and does not establish a performance gain. Both paired components compile, their bridge headers match, and 15 independent CPU math tests pass. See the [fixed profile](hud-bridge/README.md), [implementation and limits](WRITEUP.md#paired-renodx-hud-candidate) and [source/build recipe](https://github.com/Grippy98/OXP3-CACHY/blob/9ef6afa813ce4d16d0ea706926ee21e0dec27b04/experiments/renodx-gta-ui/README.md). Retain the FG-off recipe above for rollback. Long-play, cold-start/repeat-launch reliability, repeated toggles/context changes, real or zero-dimension resizes, other resolutions/gamma modes and controlled performance remain unqualified.
 
 The accepted SDR manual-HUD workaround predates this Core update and is not qualified for HDR. A final HDR10 backbuffer alone does not establish compatible HUD-less/UI inputs.
 

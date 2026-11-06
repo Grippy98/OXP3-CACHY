@@ -146,7 +146,7 @@
     },
     "gta_enhanced": {
       "steam_appid": 3240220,
-      "method": "Pinned GTA OptiScaler/native-FFX/Intel private runtime. Current HDR+XeSS SR uses official app-directory vkd3d-proton 3.1 Core, original system32 D3D12 loader, private Mesa 26.3 and private WSI candidate. Historical pre-Core SDR XeFG/HUD pass used manual RenderUI with WSI disabled.",
+      "method": "Private Intel runtime, original native FidelityFX library and GTA-specific OptiScaler. Current fixed-1920x1200 HDR/XeSS/XeFG/HUD route uses the matched OptiScaler/RenoDX UI bridge, official app-directory vkd3d-proton 3.1 Core, original system32 D3D12 loader, private Mesa 26.3 and private WSI candidate. The FG-Off HDR/SR baseline remains separate; historical pre-Core SDR XeFG/HUD used manual RenderUI with WSI disabled.",
       "dxgi_proxy": true,
       "gpu_spoofing": false,
       "prefix_or_proton_modifications": false,
@@ -172,7 +172,7 @@
         "UIComposition": false,
         "LoadReshade": false
       },
-      "validation": "Current HDR/SR: fresh XeSS SR 2.0.2 initialization, ReShade/RenoDX D3D12 initialization, application HDR feedback and Story gameplay on two short Core-only 3.1 cold starts. Native FSR FG flickered; Intel XeFG failed proxy-swapchain teardown. Historical pre-Core SDR owner confirmed HUD/map/phone with manual RenderUI; no post-Core SDR, measured 2x, latency or long-play result.",
+      "validation": "Short owner-accepted Story Mode visual pass at fixed 1920x1200 for HDR + XeSS SR + XeFG + HUD using matched OptiScaler 126edef and RenoDX cbc474, installed November 5, 2026. Owner reported normal output and that everything worked, including frame generation. The separate FG-Off HDR/SR baseline passed two short Core-only 3.1 Story cold starts. Historical pre-Core SDR owner accepted HUD/map/phone with manual RenderUI; post-Core SDR equivalence remains unqualified. Experimental fixed-resolution result only. No new present-counter, measured multiplier, latency, controlled performance, long-play, real resize, repeated-context or other-display-mode qualification is claimed for this pair.",
       "direct_provider_trial": {
         "result": "Not recommended for GTA: initialization stall/watchdog termination repeated with FG disabled.",
         "observed": "SR context creation and callback return succeeded; last recorded API entry was phase-count query 0x10004. Query return/output were not established; no XeSS initialization/dispatch observed. No new GPU hang/reset observed.",
@@ -189,7 +189,7 @@
         "limits": "Driver-identity changes can reset game upscaling. Menu visibility or saved settings were not accepted as execution proof. Mesa 26.3 has not been isolated as the sole cause of earlier stalls.",
         "startup_state": "Earlier upstream v10 trial: SR was enabled after startup with SR reset off. This is distinct from the current fork/WSI startup combination.",
         "runtime_checks": "Historical SDR: private shim/Mesa 26.1.2 and SR libxess-to-igdext calls. Current HDR: latest private shim/Mesa 26.3 selected, fresh XeSS SR 2.0.2 initialization, Story gameplay and HDR feedback.",
-        "current_HDR_result": "Fresh SR 2.0.2 initialization and Story gameplay with official 3.1 Core/original loader, private Mesa 26.3, RenoDX and private WSI; no FG."
+        "current_HDR_result": "FG-Off baseline: fresh SR 2.0.2 initialization and Story gameplay with official 3.1 Core/original loader, private Mesa 26.3, RenoDX and private WSI. Later matched HUD bridge: short owner-accepted fixed-1920x1200 HDR/XeSS SR/XeFG/HUD Story test; see ../gta-enhanced-hdr/hud-bridge/README.md."
       },
       "native_ffx": {
         "support_relative_path": "OptiScaler/gta-stock-ffx.dll",
@@ -199,9 +199,9 @@
         "standalone_amd_d3d12_providers": "Quarantined at root and support locations to prevent separate module precedence."
       },
       "hud_status": {
-        "status": "Historical pre-Core SDR manual-UI pass accepted; current HDR+SR HUD normal with FG Off in short tests; combined HDR+FG unresolved.",
+        "status": "Short owner-accepted Story Mode visual pass at fixed 1920x1200 for HDR + XeSS SR + XeFG + HUD using matched OptiScaler 126edef and RenoDX cbc474, installed November 5, 2026. Owner reported normal output and that everything worked, including frame generation. Experimental fixed-resolution result only. No new present-counter, measured multiplier, latency, controlled performance, long-play, real resize, repeated-context or other-display-mode qualification is claimed for this pair.",
         "earlier_sdr_symptom": "Minimap and phone disappear with FG On, return with FG Off.",
-        "normal_play": "HDR+SR with Core 3.1/private Mesa 26.3/private WSI reached Story twice with FG Off. Earlier manual-UI SDR pass predates Core update. Long-play/broader scenes unqualified.",
+        "normal_play": "FG-Off HDR/SR baseline reached Story twice with Core 3.1/private Mesa 26.3/private WSI. The later matched HUD bridge received a short fixed-1920x1200 Story visual pass with FG and HUD working. Historical manual-UI SDR result predates Core update; no long-play/broader-scene qualification.",
         "full_backbuffer_startup_trial": {
           "profile": "Private HDR WSI layer; complete-backbuffer interpolation",
           "FrameGen.Enabled": true,
@@ -214,9 +214,9 @@
             "Proton Experimental",
             "Proton 11.0-2"
           ],
-          "validation": "Earlier pre-Core startup trials failed; newer Core 3.1 HDR/full-backbuffer trial failed SDK Destroy due outstanding proxy-swapchain reference during GTA FFX replacement. No combined-HDR HUD fix result.",
+          "validation": "Historical failed trials: pre-Core startup attempts failed; an early Core 3.1 HDR/full-backbuffer attempt hit SDK Destroy with outstanding proxy-swapchain references during GTA FFX replacement. These failures preceded owned-outer capture/reuse and native-interface corrections; they are not the current paired bridge result.",
           "FrameGen.DrawUIOverFG": false,
-          "source_audit": "Pinned wrapper destroys XeFG context before releasing underlying proxy reference. Initial depth/MV flags already match later GTA flags. A source lifetime remedy is being investigated; no new patch runtime-qualified."
+          "source_audit": "Superseded initial theory: wrapper teardown order was suspected after the outstanding-reference failure. Later diagnosis identified ownership of the API-visible ReShade outer chain during GTA replacement. The targeted owned-outer capture/reuse remedy preserves that presentation chain; native D3D12 boundary corrections and the paired HUD bridge followed. A general teardown reorder is not the current conclusion."
         },
         "earlier_ui_composition_trial": {
           "FrameGen.DisableUI": false,
@@ -238,6 +238,44 @@
           "limits": "Short visual result only; actual 2x presentation, native/generated-frame split, latency, long-play and broader scene coverage not measured.",
           "Plugins.LoadReshade": false,
           "qualification_timing": "Owner visual result predates per-game Core 3.1 update; no post-Core SDR equivalence established."
+        },
+        "current_paired_hdr_bridge": {
+          "documentation": "../gta-enhanced-hdr/hud-bridge/README.md",
+          "status": "Short owner-accepted Story Mode visual pass at fixed 1920x1200 for HDR + XeSS SR + XeFG + HUD using matched OptiScaler 126edef and RenoDX cbc474, installed November 5, 2026. Owner reported normal output and that everything worked, including frame generation.",
+          "installed_pair_labels": {
+            "OptiScaler": "126edef",
+            "RenoDX": "cbc474"
+          },
+          "exact_asset_pins": "Recorded with matched build/settings instructions in ../gta-enhanced-hdr/hud-bridge/README.md; do not mix components or infer pins from historical CI artifacts.",
+          "optiscaler": {
+            "upstream_commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+            "source_patch_sha256": "0271ab4c41ba8e7d1fba6ed7e0a1844844676100ce6c3669b874a646764914c2",
+            "role": "Owned native-interface/presentation-chain corrections and immutable UI-resource/queue packet producer."
+          },
+          "renodx": {
+            "upstream_commit": "bc0ead39917634e95c534f7e8cfb59ab82880747",
+            "source_patch_sha256": "36aa8c12e672cffd79973cf7d4c2ffc86173b4decb3bf62116108cdf2c600b73",
+            "role": "Consumes the matching UI packet and existing FP16 UI clone; composites before the final HDR conversion."
+          },
+          "bridge": {
+            "version": 1,
+            "snapshot_bytes": 112,
+            "header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7"
+          },
+          "qualification": {
+            "resolution": [
+              1920,
+              1200
+            ],
+            "mode": "Story Mode HDR + XeSS SR + XeFG + HUD",
+            "independent_cpu_math_tests": 15,
+            "limits": "Experimental fixed-resolution result only. No new present-counter, measured multiplier, latency, controlled performance, long-play, real resize, repeated-context or other-display-mode qualification is claimed for this pair."
+          },
+          "historical_build_workflow_revisions": {
+            "optiscaler": "9ef6afa813ce4d16d0ea706926ee21e0dec27b04",
+            "renodx": "cd41ee65845a85e468c56d861ab6c980a06ea49b",
+            "scope": "Historical workflow/source provenance, not durable binary download locations. Use the local HUD bridge guide for consumption."
+          }
         }
       },
       "runtime_warnings": "Earlier SDR FG trial: interpolation rectangle fell back to swapchain size without ending gameplay; context-destroy outstanding-reference message occurred during a Story transition.",
@@ -260,19 +298,19 @@
         "ResScalingType": 3,
         "FrameGenType": 2
       },
-      "compatibility_status": "HDR+XeSS SR passed two short Core-only 3.1 Story cold starts; native FSR FG flicker and Intel XeFG teardown failure remain unresolved. Historical SDR HUD pass predates Core update.",
+      "compatibility_status": "Short owner-accepted Story Mode visual pass at fixed 1920x1200 for HDR + XeSS SR + XeFG + HUD using matched OptiScaler 126edef and RenoDX cbc474, installed November 5, 2026. Owner reported normal output and that everything worked, including frame generation. FG-Off HDR/SR baseline remains available. Native FSR FG is a separate historical flickering path; earlier Intel teardown/HUD failures are superseded by the targeted paired route. Experimental fixed-resolution result only. No new present-counter, measured multiplier, latency, controlled performance, long-play, real resize, repeated-context or other-display-mode qualification is claimed for this pair.",
       "cold_start_status": {
-        "result": "Current HDR+XeSS SR passes in two short Core-only 3.1 Story cold starts",
-        "current_profile": "Official 3.1 app Core/original system32 loader; private Mesa 26.3; private WSI candidate; FG Off",
+        "result": "FG-Off HDR/XeSS SR baseline passed two short Core-only 3.1 Story cold starts. Later paired HDR/XeSS/XeFG/HUD route received one short owner Story visual acceptance; repeated cold starts/context changes remain unqualified.",
+        "current_profile": "Separate FG-Off baseline: official 3.1 app Core/original system32 loader, private Mesa 26.3 and private WSI candidate. Current paired FG route/settings: ../gta-enhanced-hdr/hud-bridge/README.md",
         "historical_pre_core": "One earlier private-WSI-only HDR run succeeded; later durable/restored exact earlier profiles froze.",
-        "fg_enabled": "Native FSR FG owner flicker/artifacting; Intel XeFG full-backbuffer trial SDK reference-count teardown failure.",
+        "fg_enabled": "Historical native FSR FG flickered and earlier Intel full-backbuffer attempts failed ownership/interface/HUD checks. The later matched OptiScaler/RenoDX bridge received a short fixed-1920x1200 Story visual pass; no repeated-start reliability claim.",
         "cause_limit": "Official 3.1 contains exact upstream dropped-fence-event-registration fix. Individual WSI/Mesa necessity and all long-play reliability are not established."
       },
       "driver_change_checks": {
         "symptom": "Changing Mesa selection or GPU identity can reset GTA SR/FG settings to Off (ResScalingType=0, FrameGenType=0).",
         "required": "Check the actual running graphics menu, reselect intended settings and confirm fresh SR evaluation/dispatch. A Story launch, HDR feedback, saved XML or shader-cache creation alone does not establish SR execution."
       },
-      "initial_config_scope": "Historical pre-Core SDR manual-UI profile; current working HDR profile uses hdr_sr_config instead.",
+      "initial_config_scope": "Historical pre-Core SDR manual-UI profile. hdr_sr_config remains the separate FG-Off HDR baseline; current paired HDR/XeFG/HUD settings are recorded in ../gta-enhanced-hdr/hud-bridge/README.md.",
       "historical_pre_core_hdr_pass": {
         "FrameGen.Enabled": false,
         "FrameGen.FGInput": "nofg",
@@ -303,7 +341,7 @@
         "core_guide": "../gta-enhanced-hdr/vkd3d/README.md",
         "core_installer": "../gta-enhanced-hdr/vkd3d/install-vkd3d.py",
         "core_source_pins": "../gta-enhanced-hdr/vkd3d/source-pins.json",
-        "qualification": "Two short Story cold starts with fresh XeSS SR initialization, RenoDX D3D12/HDR feedback and normal HUD/gameplay; owner reports works. No long-play/performance/combined-FG claim.",
+        "qualification": "Unchanged FG-Off baseline: two short Story cold starts with fresh XeSS SR initialization, RenoDX D3D12/HDR feedback and normal HUD/gameplay; owner reports works. No long-play/performance qualification. Separate paired HDR/FG/HUD visual acceptance does not alter this baseline.",
         "causality_limit": "Private WSI candidate retained; necessity of WSI/Mesa selection and stock-layer comparison for this exact combination unqualified."
       }
     },
@@ -322,7 +360,7 @@
       "license": "GPL-3.0 upstream notice retained in licenses/OptiScaler-GPL-3.0.txt",
       "license_url": "https://raw.githubusercontent.com/daniel-h-0/OptiScaler/273e8d449763d0e9e051dee831dc42badcd15d00/LICENSE",
       "license_sha256": "e57f1c320b8cf8798a7d2ff83a6f9e06a33a03585f6e065fea97f1d86db84052",
-      "scope": "Reviewed GTA Social Club auxiliary-factory handling and Streamline initialization locking. Official Intel SDK libraries retained; FreeFG replacement/pacer not activated.",
+      "scope": "Base release for the FG-Off baseline and historical SDR setup: reviewed GTA Social Club auxiliary-factory handling and Streamline initialization locking. Current paired HDR/FG/HUD build adds the separately pinned corrections documented in ../gta-enhanced-hdr/hud-bridge/README.md. Official Intel SDK libraries retained; FreeFG replacement/pacer not activated.",
       "ui_refresh_proposal": {
         "path": "patches/PROPOSAL-273e8d4-refresh-xefg-ui-texture.patch",
         "status": "PROPOSAL ONLY: apply-checked; not built or deployed; not responsible for the runtime workaround result.",
@@ -333,7 +371,8 @@
         "patch_sha256": "021157f34ed04766df05846a27bc17e496163e1667e3b2bb61571b18fff9d940",
         "change": "Refresh cached UIColor in Dispatch like HUDless, guarded by SDK UI-composition API availability; retain existing resource/tag logic.",
         "validation": "git apply --check passed against exact pinned source; no build/hardware validation."
-      }
+      },
+      "current_paired_hdr_bridge": "../gta-enhanced-hdr/hud-bridge/README.md"
     },
     "earlier_upstream_nightly_trial": {
       "source_commit": "380b9c67594474778ef269d9ce9120461412977c",
@@ -349,7 +388,7 @@
       "reshade_addon_loader": "6.8.0 (x64 DLL 6.8.0.2155)",
       "renodx_gta_addon": "0.2026.1104.1857",
       "system_gamescope_replaced": false,
-      "compatibility_status": "HDR+XeSS SR passed two short Core-only 3.1 Story cold starts; combined native FSR/Intel XeFG remains unqualified.",
+      "compatibility_status": "Short owner-accepted Story Mode visual pass at fixed 1920x1200 for HDR + XeSS SR + XeFG + HUD using matched OptiScaler 126edef and RenoDX cbc474, installed November 5, 2026. Owner reported normal output and that everything worked, including frame generation. Separate FG-Off HDR/SR baseline passed two short Core-only 3.1 Story cold starts. Native FSR FG remains a distinct historical failed control. Experimental fixed-resolution result only. No new present-counter, measured multiplier, latency, controlled performance, long-play, real resize, repeated-context or other-display-mode qualification is claimed for this pair.",
       "vkd3d": {
         "version": "3.1",
         "source_commit": "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1",
@@ -360,7 +399,9 @@
         "guide": "../gta-enhanced-hdr/vkd3d/README.md",
         "source_pins": "../gta-enhanced-hdr/vkd3d/source-pins.json",
         "rollback_limit": "Use recorded Core rollback to return to exact pre-Core SDR baseline; no post-Core SDR visual qualification."
-      }
+      },
+      "renodx_gta_addon_scope": "Original version pin for the FG-Off HDR/SR baseline; accepted HDR/XeFG/HUD uses matched RenoDX cbc474 from ../gta-enhanced-hdr/hud-bridge/README.md.",
+      "current_paired_hdr_bridge": "../gta-enhanced-hdr/hud-bridge/README.md"
     },
     "test_validation": {
       "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'",

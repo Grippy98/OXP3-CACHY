@@ -19,7 +19,7 @@
     "provenance_limit": "Current upstream snapshot download pinned by SHA256. Same-commit successful snapshot workflow and hosted timestamp correlate; no reproducible-build or signed-attestation verification performed."
   },
   "chain": {
-    "opti_proxy": "dxgi.dll unchanged",
+    "opti_proxy": "Baseline dxgi.dll retained unchanged; the separately documented paired HUD profile uses the pinned patched Opti build",
     "ReShade_file": "game-root ReShade64.dll",
     "opti_ini": {
       "Plugins.LoadReshade": true,
@@ -30,7 +30,7 @@
     "game_addon_file": "game-root renodx-gtav-enhanced.addon64",
     "wine_override_changes": "Per-game d3d12core=n,b merged with existing overrides; launcher retains its DXGI entry. No registry/prefix edits.",
     "hdr10_default": "GTA addon calls SetUseHDR10(true); swapchain_v2 selects R10G10B10A2_UNORM + HDR10 ST2084. Internal cloned render resources can be FP16.",
-    "unverified": "Long-play stability, controlled performance, display calibration and HDR+FG compatibility are unqualified. Stock WSI and individual necessity of Mesa 26.3/private WSI have not been isolated.",
+    "unverified": "Long-play, cold-start/repeat-launch reliability of the paired profile, repeated toggles/context changes, real or zero-dimension resizes, other resolutions/gamma modes, controlled performance and display calibration are unqualified. Stock WSI and individual necessity of Mesa 26.3/private WSI have not been isolated.",
     "gamescope_wsi": {
       "enable_process_environment": {
         "ENABLE_GAMESCOPE_WSI": "1"
@@ -45,29 +45,31 @@
     },
     "game_directory_vkd3d": "Official vkd3d-proton 3.1 x64 d3d12core.dll only; retain original system32 d3d12.dll loader"
   },
-  "status": "HDR plus XeSS SR working in two short Core-only vkd3d 3.1 Story cold-start tests; combined frame generation unresolved",
+  "status": "HDR/XeSS SR rollback baseline retained; paired HDR/XeFG/HUD accepted by owner in one short built-in 1920x1200 Story Mode session; long-play, cold-start/repeat, toggle and resize behavior unqualified",
   "scope": {
     "game": "Grand Theft Auto V Enhanced",
     "steam_appid": 3240220,
     "mode": "Story Mode",
     "existing_xess_runtime": "20261104; explicitly select its private Mesa 26.3.0-rc3 with MESA=26.3 for this HDR profile",
-    "existing_opti_proxy": "daniel-h-0/OptiScaler bc250-273e8d4, retained unchanged",
-    "frame_generation": "Off in game; OptiScaler Enabled=false, FGInput=nofg, FGOutput=nofg in the working HDR/SR profile",
+    "existing_opti_proxy": "FG-off rollback baseline: daniel-h-0/OptiScaler bc250-273e8d4; accepted paired HUD profile uses the separately pinned patched build",
+    "frame_generation": "FG Off in retained HDR/SR rollback recipe; paired HDR/FG/HUD profile user-accepted only for the fixed built-in 1920x1200/GammaCorrection1 short Story Mode test",
     "proton": "Original Proton Experimental system32 D3D12 loader retained; app-directory Core updated to official vkd3d-proton 3.1. No shared Proton/prefix replacement."
   },
   "validation": {
     "startup": "Two short Story Mode cold starts succeeded with Core-only vkd3d 3.1, private Mesa 26.3 and private WSI candidate; not long-play qualification",
     "actual_hdr": "ReShade/RenoDX initialized on D3D12; R10/PQ Rec.2020 and Gamescope application HDR feedback active",
     "xeSS_SR_visual": "Fresh XeSS SR 2.0.2 initialization and Story gameplay confirmed; owner reported it works",
-    "HUD_map_phone": "Normal Story gameplay/HUD image observed with FG Off; earlier owner accepted HUD appearance. No new combined-FG HUD qualification",
+    "HUD_map_phone": "Owner confirmed normal HDR/colors and working HUD, map, phone and frame generation with the paired Opti/Reno build in a short fixed-resolution Story Mode session",
     "repeat_launch": "Second cold start reached Story after restoring FG Off",
     "long_play": "Not qualified",
     "hdr_plus_native_FSR_FG": "Owner reported artifacting/flickering after enabling in-game FSR FG during OptiScaler nofg control; restored Off",
-    "hdr_plus_xeFG": "Full-backbuffer trial failed SDK swapchain-destroy reference-count check. Source audit identifies wrapper teardown order; no patch runtime-qualified",
-    "performance": "Not benchmarked; no 2x, latency or pacing claim",
+    "hdr_plus_xeFG": "Current paired build user-accepted in a short fixed 1920x1200 Story session. Earlier native-interface controls confirmed successful interpolation and framesPresented=2; no fresh paired present count or performance measurement is asserted here.",
+    "performance": "Not benchmarked; no performance-gain, latency, pacing or current paired present-count claim",
     "causality_limit": "Core update includes exact upstream dropped-fence-registration fix; individual necessity of Mesa 26.3/private WSI and stock-layer behavior remain unproved",
     "SDR_HUD_limit": "Accepted SDR DrawUIOverFG test predates this Core update; no post-Core SDR or HDR manual-composition qualification",
-    "kernel_health": "No GPU hang/reset found in earlier failed control; this does not establish complete startup or long-play reliability"
+    "kernel_health": "No GPU hang/reset found in earlier failed control; this does not establish complete startup or long-play reliability",
+    "paired_repeat_launch": "Not qualified; earlier FG-off cold-start results do not establish paired-profile repeat reliability",
+    "paired_lifecycle": "Repeated FG toggles/context changes, real or zero-dimension resizes, other resolutions/gamma modes and manual addon unload not qualified"
   },
   "licenses": {
     "renodx": {
@@ -127,7 +129,7 @@
     "validation": "No persistent tutorial reported during successful short gameplay; brief startup notice may still appear, and a frozen frame can retain it."
   },
   "experimental_frame_generation_trial": {
-    "status": "Unqualified: full-backbuffer HDR XeFG trial failed proxy-swapchain teardown with references in use; working profile restored FG Off",
+    "status": "Historical failed full-backbuffer control, superseded by separately documented owned-chain/native-interface and paired HUD changes",
     "FrameGen.Enabled": true,
     "FrameGen.FGInput": "fsrfg",
     "FrameGen.FGOutput": "xefg",
@@ -135,9 +137,9 @@
     "FrameGen.DisableUI": true,
     "XeFG.UIComposition": false,
     "FrameGen.DrawUIOverFG": false,
-    "failure_stage": "GTA FFX FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12 replacement; wrapper called XeFG Destroy before releasing its underlying proxy reference",
+    "failure_stage": "GTA requested replacement FFX swapchain; SDK destruction was attempted while presentation-chain/backbuffer references remained live",
     "init_flag_control": "Initial InvertedDepth=true, JitteredMV=false, HighResMV=false already matched later GTA context; no supported flag workaround",
-    "source_audit": "Relevant FfxApi_Dx12_FG.cpp, wrapped_swapchain.cpp and IFGFeature_Dx12.cpp match installed OptiScaler commit273e8d4; source issue only, no runtime-qualified patch"
+    "source_audit": "Historical teardown assessment; current paired path reuses the owned application-visible ReShade chain, normalizes SDK native interfaces and composes registered UI inside the GTA Reno addon"
   },
   "vkd3d_core": {
     "version": "3.1",
@@ -157,5 +159,52 @@
     "rollback": "Checked original file/symlink/absent state; refuses to overwrite modified installed Core; DLL override removal is a separate manual step",
     "pair_trial_limit": "An app-directory release DLL-pair control reached menu with HDR inactive because ReShade missed D3D12 device interception; not HDR success",
     "qualification": "Original loader/new app Core mapping, RenoDX D3D12/HDR feedback and fresh XeSS SR established in two short Story cold starts; no long-play or FG claim"
+  },
+  "paired_hud_bridge": {
+    "profile_guide": "hud-bridge/README.md",
+    "status": "Owner-accepted short Story Mode HDR/colors/HUD/map/phone/frame-generation result; fixed built-in-screen profile only",
+    "recipe_commit": "9ef6afa813ce4d16d0ea706926ee21e0dec27b04",
+    "recipe_url": "https://github.com/Grippy98/OXP3-CACHY/blob/9ef6afa813ce4d16d0ea706926ee21e0dec27b04/experiments/renodx-gta-ui/README.md",
+    "renodx": {
+      "base_commit": "bc0ead39917634e95c534f7e8cfb59ab82880747",
+      "patch_sha256": "36aa8c12e672cffd79973cf7d4c2ffc86173b4decb3bf62116108cdf2c600b73",
+      "addon_sha256": "cbc474691f69996f3a4d1a922364f86544c0a5deb4ed760892954aa1bb140f2a",
+      "workflow_commit": "cd41ee65845a85e468c56d861ab6c980a06ea49b",
+      "build_run": "https://github.com/Grippy98/OXP3-CACHY/actions/runs/42140406948"
+    },
+    "optiscaler": {
+      "base_commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
+      "patch_sha256": "0271ab4c41ba8e7d1fba6ed7e0a1844844676100ce6c3669b874a646764914c2",
+      "dll_sha256": "126edef53d8da2962c943a35e6383fa41eb37c2fb79f25a59e95980363c9efde",
+      "workflow_commit": "9ef6afa813ce4d16d0ea706926ee21e0dec27b04",
+      "build_run": "https://github.com/Grippy98/OXP3-CACHY/actions/runs/42141184954"
+    },
+    "bridge": {
+      "snapshot_bytes": 112,
+      "header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7",
+      "contract": "Immutable COM packet with owned UI resource/native queue; process-global publication serial; no swapchain reference or shared opaque C++ resource map"
+    },
+    "fixed_scope": {
+      "display": "built-in",
+      "resolution": [
+        1920,
+        1200
+      ],
+      "gamma_correction": 1,
+      "ui_flags": 3,
+      "native_ui_format": "BGRA8 UNORM with existing Reno FP16 clone and tracked UNORM-only original RTV",
+      "encoding": "Encoded-space premultiplication remains an explicit GTA-path hypothesis; no FP16-is-linear/scRGB assumption"
+    },
+    "build_validation": "Both Windows components compiled; regenerated shader/static/header checks and 15 independent CPU math tests passed",
+    "runtime_validation": "Owner confirmed normal HDR/colors and working HUD/map/phone/frame generation in a short Story Mode session; current runtime telemetry verification remains separate",
+    "earlier_generated_output": "Native-interface controls before the paired HUD build reported successful SDK interpolation and framesPresented=2; not asserted as a fresh current paired count",
+    "limits": [
+      "Long-play and controlled performance not benchmarked",
+      "Paired cold-start/repeat-launch and repeated-toggle/context behavior unqualified",
+      "Real or zero-dimension resize requests, other resolutions/gamma modes and manual addon unload unqualified",
+      "HUD is composed before interpolation; subtle ghosting/disocclusion and per-generated-frame post-interpolation UI remain unqualified",
+      "GPU snapshot-copy cost unmeasured"
+    ],
+    "rollback": "Retain earlier HDR/SR profile with game FG Off and Opti Enabled=false, FGInput=nofg, FGOutput=nofg; restore its recorded original Opti/Reno files rather than mixing paired builds"
   }
 }

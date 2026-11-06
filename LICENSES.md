@@ -12,7 +12,7 @@ Upstream files keep their existing copyright and license notices. No project-wid
 | InputPlumber | [GPL-3.0](fixes/oxp3-controller/inputplumber/LICENSE) |
 | Limine and bundled reference headers | [Limine COPYING](fixes/boot-controller/COPYING), component licenses under `reference-headers/` |
 | Gamescope runtime | [License](fixes/internal-panel-refresh/gamescope/accepted-runtime/LICENSE) |
-| GTA HDR userspace components | [Gamescope/vkroots/helper notices](fixes/gta-enhanced-hdr/licenses/), [ReShade/RenoDX credits](fixes/gta-enhanced-hdr/WRITEUP.md#credits), [vkd3d LGPL notices](fixes/gta-enhanced-hdr/vkd3d/LICENSES/) |
+| GTA HDR userspace components | [Gamescope/vkroots/helper notices](fixes/gta-enhanced-hdr/licenses/), [ReShade/RenoDX credits](fixes/gta-enhanced-hdr/WRITEUP.md#credits), [paired HUD source notices](fixes/gta-enhanced-hdr/hud-bridge/README.md#build-the-pair), [vkd3d LGPL notices](fixes/gta-enhanced-hdr/vkd3d/LICENSES/) |
 | MangoHud and Intel PMT schema | [MangoHud](fixes/intel-tdp-mangohud/telemetry/LICENSE), [Intel PMT](fixes/intel-tdp-mangohud/telemetry/references/intel-pmt/LICENSE), [credits](fixes/intel-tdp-mangohud/telemetry/CREDITS.md) |
 | AMD reference FreeSync test functions | [AMD license](fixes/external-display-vrr/freesync-gmp/tests/AMD-LICENSE.txt) |
 | SteamOS powerbuttond / CachyOS chwd references | License files beside the pinned reference source in `fixes/power-button/upstream/reference/` |
