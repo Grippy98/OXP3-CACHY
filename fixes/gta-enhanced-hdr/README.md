@@ -1,6 +1,6 @@
 # GTA V Enhanced HDR
 
-**HDR with XeSS upscaling works in short Story Mode tests; keep frame generation off.** The current profile reached gameplay on two cold starts using the official vkd3d-proton 3.1 Core, private Mesa 26.3 and the private Gamescope WSI candidate. Experimental Intel XeFG now generates frames with stable, normal-color output in a short controlled test, but its HUD is still broken. Combined HDR/FG remains unqualified.
+**HDR with XeSS upscaling works in short Story Mode tests; keep frame generation off.** The documented profile reached gameplay on two cold starts. A paired OptiScaler/RenoDX HUD candidate now builds and reaches the normal HDR menu, but Story Mode HUD, map, phone, colors and motion checks are pending. Combined HDR/FG remains unqualified.
 
 RenoDX adds HDR to the tested PC build; this does not enable a native Rockstar HDR option. The private WSI backport remains a candidate: its necessity has not been isolated, and this profile has not yet been compared successfully with the stock WSI layer.
 
@@ -67,7 +67,7 @@ ShowPresetTransitionMessage=0
 
 The Core-only profile retained the original system32 D3D12 loader and loaded the official 3.1 app-directory Core. ReShade/RenoDX initialized on D3D12, Gamescope reported application HDR, and fresh XeSS SR 2.0.2 initialization plus Story Mode gameplay were observed. The owner reported that it worked; a second cold start returned to Story Mode after frame generation was restored to Off. This is short-session HDR/SR validation, with no long-play or controlled-performance claim.
 
-**Combined HDR and frame generation remains unresolved.** Native FSR FG flickered and lost application-HDR feedback. The experimental Intel XeFG correction briefly reported successful interpolation with two frames sent to the presenter, followed by owner-reported oversaturation and an OptiScaler legacy-menu crash. Failed duplicate resizes also left RenoDX tracking unregistered, providing a concrete color-corruption lead without identifying who held the backbuffer references. A narrowly scoped resize/menu retry reached stable, normal-color Story Mode with generated frames, but HUD elements were broken until the owner disabled FG. See the [implementation diagnosis and test limits](WRITEUP.md#frame-generation-scope). None of these experiments changes the FG-off installation recipe.
+**Combined HDR and frame generation remains unresolved.** An earlier Intel XeFG control reached stable, normal-color Story Mode with confirmed generated output, but omitted the separately registered HUD. The new paired candidate transports that UI through an owned COM packet and composes its live RenoDX clone during the final HDR pass. Both components compile, their bridge headers match, and 15 independent CPU math tests pass. The first menu has normal output with application HDR active; Story Mode visual validation is pending. See the [implementation and limits](WRITEUP.md#paired-renodx-hud-candidate) and [experimental source/build recipe](https://github.com/Grippy98/OXP3-CACHY/blob/9ef6afa813ce4d16d0ea706926ee21e0dec27b04/experiments/renodx-gta-ui/README.md). The FG-off installation recipe remains the working baseline.
 
 The accepted SDR manual-HUD workaround predates this Core update and is not qualified for HDR. A final HDR10 backbuffer alone does not establish compatible HUD-less/UI inputs.
 
