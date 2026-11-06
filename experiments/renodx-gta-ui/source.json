@@ -1,6 +1,40 @@
 {
   "repository": "https://github.com/clshortfuse/renodx",
   "commit": "bc0ead39917634e95c534f7e8cfb59ab82880747",
-  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "status": "Unmodified pinned-source build control. The HUD consumer patch is not included yet. No runtime qualification."
+  "patch_sha256": "36aa8c12e672cffd79973cf7d4c2ffc86173b4decb3bf62116108cdf2c600b73",
+  "ui_packet_header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7",
+  "status": "source_candidate_not_built_or_runtime_qualified",
+  "bridge": {
+    "header": "src/games/gtav-enhanced/oxp3_ffx_ui_packet.h",
+    "version": 1,
+    "snapshot_bytes": 112,
+    "header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7",
+    "producer": "OptiScaler source 273e8d449763d0e9e051dee831dc42badcd15d00 with separately reviewed native-interface and UI-packet patches",
+    "lifetime": "immutable COM packet; UI resource and queue acquired with owned QI references; no swapchain reference in packet",
+    "publication_serial": "process-global monotonic serial; never reset by a new FFX session; producer DLL manual reload unsupported"
+  },
+  "scope": {
+    "api": "D3D12",
+    "game": "GTA V Enhanced Story Mode",
+    "steam_appid": 3240220,
+    "ui_format": "BGRA8 UNORM original plus an existing Reno FP16 clone",
+    "ui_flags": 3,
+    "native_resource_state": "PS_RESOURCE | NON_PIXEL_SHADER_RESOURCE (0xC0)",
+    "resolution": [
+      1920,
+      1200
+    ],
+    "gamma_correction": 1,
+    "composition": "encoded-space premultiplied UI hypothesis; decode to linear BT.709, blend and apply Reno final conversion once",
+    "original_rtv": "tracked UNORM-only BGRA8 RTV required; SRGB RTV rejects the hypothesis",
+    "gpu_retirement": "checked native fence; unproved retirement stops further work and quarantines UI/scene/backbuffer leases and proxy passes until process exit"
+  },
+  "validation": {
+    "source_review": "independent COM/GPU lifetime review and shader/math/layout review passed for bounded first canary",
+    "diff_check": "passed",
+    "independent_cpu_reference_tests": 15,
+    "shader_compilation": "pending Windows CI",
+    "hardware_test": "not performed for this source candidate",
+    "clean_pinned_patch_apply": "passed against exact four pre-existing source files archived from pinned commit"
+  }
 }

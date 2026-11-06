@@ -23,6 +23,10 @@ if ((Get-Item $patch).Length -gt 0) {
     git -C $source diff --check
     if ($LASTEXITCODE -ne 0) { throw 'Source patch whitespace check failed.' }
 }
+if ($pin.PSObject.Properties.Name -contains 'ui_packet_header_sha256') {
+    $header = Join-Path $source 'src/games/gtav-enhanced/oxp3_ffx_ui_packet.h'
+    if ((Get-FileHash $header -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.ui_packet_header_sha256) { throw 'UI packet ABI header mismatch.' }
+}
 
 # Match upstream's managed shader-tool versions, additionally verifying exact release archive hashes.
 $bin = Join-Path $source 'bin'
@@ -81,6 +85,7 @@ $record = [ordered]@{
     source_repository = $pin.repository
     source_commit = $pin.commit
     patch_sha256 = $pin.patch_sha256
+    ui_packet_header_sha256 = $pin.ui_packet_header_sha256
     addon_sha256 = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLowerInvariant()
     proxy_shader_header_sha256 = (Get-FileHash $shaderHeader -Algorithm SHA256).Hash.ToLowerInvariant()
     compiler = $compilerVersion

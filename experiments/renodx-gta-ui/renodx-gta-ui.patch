@@ -1,0 +1,598 @@
+diff --git a/src/games/gtav-enhanced/addon.cpp b/src/games/gtav-enhanced/addon.cpp
+index a3362f20..59c43e93 100644
+--- a/src/games/gtav-enhanced/addon.cpp
++++ b/src/games/gtav-enhanced/addon.cpp
+@@ -19,6 +19,7 @@
+ #include "../../utils/settings.hpp"
+ #include "../../utils/swapchain.hpp"
+ #include "./shared.h"
++#include "./hud_composition.hpp"
+ 
+ namespace {
+ 
+@@ -453,6 +454,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
+         renodx::mods::shader::allow_multiple_push_constants = true;
+ 
+         renodx::mods::swapchain::SetUseHDR10(true);
++        gtav_hdr_ui::gamma_correction = &shader_injection.gamma_correction;
++        gtav_hdr_ui::graphics_white_nits = &shader_injection.graphics_white_nits;
++        renodx::mods::swapchain::render_swap_chain_proxy_pass = gtav_hdr_ui::Render;
++        renodx::mods::swapchain::before_destroy_swap_chain_proxy_passes = gtav_hdr_ui::OnDestroySwapchain;
+         renodx::mods::swapchain::expected_constant_buffer_index = 13;
+         renodx::mods::swapchain::expected_constant_buffer_space = 50;
+         renodx::mods::swapchain::use_resource_cloning = true;
+diff --git a/src/games/gtav-enhanced/hud_composition.hpp b/src/games/gtav-enhanced/hud_composition.hpp
+new file mode 100644
+index 00000000..f30edbd5
+--- /dev/null
++++ b/src/games/gtav-enhanced/hud_composition.hpp
+@@ -0,0 +1,338 @@
++/*
++ * Copyright (C) 2026 Grippy98
++ * SPDX-License-Identifier: MIT
++ */
++#pragma once
++
++#include <d3d12.h>
++#include <dxgi1_4.h>
++#include <wrl/client.h>
++#include <array>
++#include <cstdint>
++#include <deque>
++#include <memory>
++#include <shared_mutex>
++#include <sstream>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++#include "../../mods/swapchain.hpp"
++#include "../../utils/data.hpp"
++#include "../../utils/resource.hpp"
++#include "./oxp3_ffx_ui_packet.h"
++
++namespace gtav_hdr_ui {
++using Microsoft::WRL::ComPtr;
++
++static const float* gamma_correction = nullptr;
++static const float* graphics_white_nits = nullptr;
++static constexpr GUID RESHADE_UNWRAPPED = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42}};
++static constexpr GUID STREAMLINE_UNWRAPPED = {0xadec44e2, 0x61f0, 0x45c3, {0xad, 0x9f, 0x1b, 0x37, 0x37, 0x92, 0x84, 0xff}};
++
++template <typename Interface>
++ComPtr<Interface> NativeInterface(IUnknown* object) {
++  if (reinterpret_cast<uintptr_t>(object) <= 0xffff) return {};
++  ComPtr<IUnknown> current = object;
++  std::array<IUnknown*, 8> visited = {};
++  for (size_t depth = 0; depth < visited.size(); ++depth) {
++    visited[depth] = current.Get();
++    ComPtr<IUnknown> next;
++    if (FAILED(current->QueryInterface(RESHADE_UNWRAPPED, reinterpret_cast<void**>(next.GetAddressOf())))) {
++      next.Reset();
++      current->QueryInterface(STREAMLINE_UNWRAPPED, reinterpret_cast<void**>(next.GetAddressOf()));
++    }
++    if (next == nullptr || next.Get() == current.Get()) {
++      ComPtr<Interface> result;
++      current.As(&result);
++      return result;
++    }
++    for (size_t previous = 0; previous <= depth; ++previous) {
++      if (visited[previous] == next.Get()) return {};
++    }
++    current = std::move(next);
++  }
++  return {};
++}
++
++static bool SameIdentity(IUnknown* first, IUnknown* second) {
++  if (first == nullptr || second == nullptr) return false;
++  ComPtr<IUnknown> a, b;
++  return SUCCEEDED(first->QueryInterface(IID_PPV_ARGS(a.GetAddressOf())))
++         && SUCCEEDED(second->QueryInterface(IID_PPV_ARGS(b.GetAddressOf()))) && a.Get() == b.Get();
++}
++
++struct FrameLease {
++  uint64_t fence_value = 0;
++  ComPtr<IOxp3FfxUiPacket> packet;
++  ComPtr<ID3D12Resource> clone;
++  ComPtr<ID3D12Resource> scene;
++  ComPtr<ID3D12Resource> back_buffer;
++};
++
++struct HudSurface {
++  ComPtr<ID3D12Resource> resource;
++  bool shader_readable = false;
++};
++
++// ReShade 6.8 DXGISwapChain::on_present/on_reset both hold this queue's mutex
++// while invoking addon callbacks; fields below are only used in those callbacks.
++struct HudState {
++  uint64_t publication = 0;
++  uint64_t fence_value = 0;
++  uint32_t messages = 0;
++  bool stopped = false;
++  ComPtr<ID3D12CommandQueue> queue;
++  reshade::api::command_queue* api_queue = nullptr;  // ReShade swapchain owns it through destroy_swapchain.
++  ComPtr<ID3D12Fence> fence;
++  std::deque<FrameLease> frames;
++  std::unordered_map<uint64_t, HudSurface> surfaces;
++  std::vector<renodx::utils::draw::SwapchainProxyPass*> quarantined_passes;
++  std::vector<HANDLE> quarantined_events;
++};
++static renodx::utils::data::ParallelNodeHashMap<reshade::api::swapchain*, std::shared_ptr<HudState>, std::shared_mutex> states;
++
++static void Log(HudState* state, const char* message) {
++  if (state->messages >= 16) return;
++  ++state->messages;
++  reshade::log::message(reshade::log::level::info, message);
++}
++
++static bool Render(renodx::utils::draw::SwapchainProxyPass* pass,
++                   reshade::api::swapchain* swapchain, reshade::api::command_queue* queue) {
++  const auto back_buffer = swapchain->get_current_back_buffer();
++  reshade::api::resource scene_clone = {};
++  renodx::utils::resource::GetResourceInfo(back_buffer, [&](const renodx::utils::resource::ResourceInfo& info) {
++    if (!info.destroyed) scene_clone = info.clone;
++  });
++  // The GTA shader always declares two SRVs and b14. Reject before PSO creation
++  // rather than falling back to a one-SRV call if the proven scene clone is absent.
++  if (scene_clone.handle == 0) return false;
++
++  std::array<reshade::api::resource, 1> additional_resources = {scene_clone};
++  std::array<float, 4> constants = {};
++  std::shared_ptr<HudState> state;
++  states.lazy_emplace_l(swapchain, [&](auto& entry) { state = entry.second; }, [&](const auto& constructor) {
++                         state = std::make_shared<HudState>();
++                         constructor(swapchain, state); });
++  if (const auto found = state->surfaces.find(back_buffer.handle); found != state->surfaces.end()) {
++    additional_resources[0] = {reinterpret_cast<uintptr_t>(found->second.resource.Get())};
++  }
++  if (state->fence != nullptr) {
++    const auto completed = state->fence->GetCompletedValue();
++    if (completed == UINT64_MAX) state->stopped = true;
++    while (!state->frames.empty() && state->frames.front().fence_value != 0
++           && state->frames.front().fence_value <= completed) {
++      state->frames.pop_front();
++    }
++  }
++  // A failed retirement signal is not permission to submit more work. Returning
++  // success preserves the pass until checked teardown can retire or quarantine it.
++  if (state->stopped) return true;
++
++  ComPtr<IOxp3FfxUiPacket> packet;
++  ComPtr<ID3D12Resource> ui_clone;
++  Oxp3FfxUiSnapshot snapshot = {};
++  do {
++    if (state->frames.size() >= 16 || queue->get_device()->get_api() != reshade::api::device_api::d3d12) break;
++    auto* carrier = reinterpret_cast<IDXGISwapChain*>(static_cast<uintptr_t>(swapchain->get_native()));
++    ComPtr<IUnknown> property;
++    UINT property_size = sizeof(IUnknown*);
++    if (FAILED(carrier->GetPrivateData(OXP3_FFX_UI_PACKET_PROPERTY, &property_size, property.GetAddressOf()))
++        || property == nullptr || FAILED(property.As(&packet))
++        || FAILED(packet->GetSnapshot(&snapshot, sizeof(snapshot)))) break;
++    if (snapshot.magic != OXP3_FFX_UI_MAGIC || snapshot.version != OXP3_FFX_UI_VERSION
++        || snapshot.byteSize != sizeof(snapshot) || snapshot.active != 1
++        || snapshot.session == 0 || snapshot.publicationId == 0
++        // Producer serials are process-global and never reset on a new FFX session.
++        || snapshot.publicationId <= state->publication) break;
++
++    // The first canary is deliberately restricted to the observed source/view contract.
++    if (snapshot.width != 1920 || snapshot.height != 1200 || snapshot.mipCount != 1
++        || snapshot.nativeDxgiFormat != DXGI_FORMAT_B8G8R8A8_UNORM || snapshot.ffxFormat != 14
++        || snapshot.uiFlags != (OXP3_FFX_UI_PREMULTIPLIED | OXP3_FFX_UI_DOUBLE_BUFFERED)
++        || snapshot.d3d12State != (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
++        || snapshot.rectLeft != 0 || snapshot.rectTop != 0
++        || (snapshot.rectWidth != 0 && snapshot.rectWidth != snapshot.width)
++        || (snapshot.rectHeight != 0 && snapshot.rectHeight != snapshot.height)
++        || gamma_correction == nullptr || *gamma_correction != 1.f) {
++      Log(state.get(), "[OXP3 HUD] unsupported UI contract; original scene conversion retained");
++      break;
++    }
++    auto native_device = NativeInterface<ID3D12Device>(reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(swapchain->get_device()->get_native())));
++    auto native_queue = NativeInterface<ID3D12CommandQueue>(reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(queue->get_native())));
++    ComPtr<ID3D12CommandQueue> registered_queue;
++    ComPtr<ID3D12Resource> registered_ui;
++    if (FAILED(packet->AcquireCommandQueue(IID_PPV_ARGS(registered_queue.GetAddressOf())))
++        || FAILED(packet->AcquireUiResource(IID_PPV_ARGS(registered_ui.GetAddressOf())))) break;
++    auto packet_queue = NativeInterface<ID3D12CommandQueue>(registered_queue.Get());
++    auto native_ui = NativeInterface<ID3D12Resource>(registered_ui.Get());
++    ComPtr<ID3D12Device> queue_device, ui_device;
++    if (native_device == nullptr || native_queue == nullptr || native_ui == nullptr
++        || native_queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT
++        || !SameIdentity(native_queue.Get(), packet_queue.Get())
++        || FAILED(native_queue->GetDevice(IID_PPV_ARGS(queue_device.GetAddressOf())))
++        || FAILED(native_ui->GetDevice(IID_PPV_ARGS(ui_device.GetAddressOf())))
++        || !SameIdentity(native_device.Get(), NativeInterface<ID3D12Device>(queue_device.Get()).Get())
++        || !SameIdentity(native_device.Get(), NativeInterface<ID3D12Device>(ui_device.Get()).Get())) {
++      Log(state.get(), "[OXP3 HUD] native queue/device identity mismatch; UI skipped");
++      break;
++    }
++    const auto ui_desc = native_ui->GetDesc();
++    const auto back_buffer_desc = swapchain->get_device()->get_resource_desc(back_buffer);
++    if (ui_desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || ui_desc.Width != snapshot.width
++        || ui_desc.Height != snapshot.height || ui_desc.SampleDesc.Count != 1
++        || back_buffer_desc.texture.format != reshade::api::format::r10g10b10a2_unorm
++        || back_buffer_desc.texture.width != snapshot.width || back_buffer_desc.texture.height != snapshot.height) break;
++
++    std::vector<uint64_t> views;
++    renodx::utils::resource::GetResourceInfo({reinterpret_cast<uintptr_t>(native_ui.Get())},
++                                             [&](const renodx::utils::resource::ResourceInfo& info) {
++                                               if (info.destroyed || !info.clone_enabled || info.clone.handle == 0 || info.is_swap_chain
++                                                   || info.device != swapchain->get_device()
++                                                   || info.desc.texture.format != reshade::api::format::b8g8r8a8_unorm
++                                                   || info.clone_desc.texture.format != reshade::api::format::r16g16b16a16_float) return;
++                                               ui_clone = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(info.clone.handle));
++                                               views.assign(info.resource_view_handles.begin(), info.resource_view_handles.end());
++                                             });
++    if (ui_clone == nullptr) {
++      Log(state.get(), "[OXP3 HUD] registered UI has no existing live FP16 Reno clone; UI skipped");
++      break;
++    }
++    bool unorm_rtv = false, srgb_rtv = false;
++    for (const auto view : views) {
++      renodx::utils::resource::GetResourceViewInfo({view}, [&](const renodx::utils::resource::ResourceViewInfo& info) {
++        if (info.destroyed || info.is_clone || info.usage != reshade::api::resource_usage::render_target) return;
++        unorm_rtv = unorm_rtv || info.desc.format == reshade::api::format::b8g8r8a8_unorm;
++        srgb_rtv = srgb_rtv || info.desc.format == reshade::api::format::b8g8r8a8_unorm_srgb;
++      });
++    }
++    if (!unorm_rtv || srgb_rtv) {
++      Log(state.get(), "[OXP3 HUD] original UI UNORM-only RTV contract unverified; UI skipped");
++      break;
++    }
++    const auto clone_desc = ui_clone->GetDesc();
++    if (clone_desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT || clone_desc.Width != snapshot.width
++        || clone_desc.Height != snapshot.height || clone_desc.SampleDesc.Count != 1) break;
++    ComPtr<ID3D12Device> clone_device;
++    if (FAILED(ui_clone->GetDevice(IID_PPV_ARGS(clone_device.GetAddressOf())))
++        || !SameIdentity(native_device.Get(), NativeInterface<ID3D12Device>(clone_device.Get()).Get())) break;
++    auto* command_list = queue->get_immediate_command_list();
++    if (command_list == nullptr) break;
++    if (state->queue != nullptr && !SameIdentity(state->queue.Get(), native_queue.Get())) break;
++    if (state->fence == nullptr) {
++      if (FAILED(native_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(state->fence.GetAddressOf())))) break;
++      state->queue = native_queue;
++      state->api_queue = queue;
++    }
++    auto& surface = state->surfaces[back_buffer.handle];
++    if (surface.resource == nullptr) {
++      auto snapshot_desc = clone_desc;
++      snapshot_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
++      const D3D12_HEAP_PROPERTIES heap = {.Type = D3D12_HEAP_TYPE_DEFAULT, .CreationNodeMask = 1, .VisibleNodeMask = 1};
++      if (FAILED(native_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &snapshot_desc,
++                                                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(surface.resource.GetAddressOf())))) break;
++      surface.resource->SetName(L"OXP3 GTA registered UI snapshot");
++    }
++    const reshade::api::resource clone_resource = {reinterpret_cast<uintptr_t>(ui_clone.Get())};
++    const reshade::api::resource snapshot_resource = {reinterpret_cast<uintptr_t>(surface.resource.Get())};
++    command_list->barrier(clone_resource, reshade::api::resource_usage::shader_resource,
++                          reshade::api::resource_usage::copy_source);
++    if (surface.shader_readable) {
++      command_list->barrier(snapshot_resource, reshade::api::resource_usage::shader_resource,
++                            reshade::api::resource_usage::copy_dest);
++    }
++    command_list->copy_resource(clone_resource, snapshot_resource);
++    command_list->barrier(clone_resource, reshade::api::resource_usage::copy_source,
++                          reshade::api::resource_usage::shader_resource);
++    command_list->barrier(snapshot_resource, reshade::api::resource_usage::copy_dest,
++                          reshade::api::resource_usage::shader_resource);
++    surface.shader_readable = true;
++    state->publication = snapshot.publicationId;
++    additional_resources[0] = snapshot_resource;
++    constants[0] = 1.f;
++    std::ostringstream message;
++    message << "[OXP3 HUD] live FP16 clone, encoded-PM gamma2.2 BT709 hypothesis; UI white="
++            << (graphics_white_nits != nullptr ? *graphics_white_nits : 0.f)
++            << ", frame=" << snapshot.frameId << ", publication=" << snapshot.publicationId;
++    Log(state.get(), message.str().c_str());
++  } while (false);
++
++  const bool rendered = pass->Render(swapchain, queue, nullptr, additional_resources, constants, 14, 50);
++  if (constants[0] != 0.f) {
++    // Submit this pass before placing its retirement marker on the same native queue.
++    queue->flush_immediate_command_list();
++    FrameLease lease = {
++        .packet = std::move(packet),
++        .clone = std::move(ui_clone),
++        .scene = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(scene_clone.handle)),
++        .back_buffer = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(back_buffer.handle)),
++    };
++    const auto value = ++state->fence_value;
++    if (SUCCEEDED(state->queue->Signal(state->fence.Get(), value))) {
++      lease.fence_value = value;
++    } else {
++      state->stopped = true;
++      Log(state.get(), "[OXP3 HUD] retirement signal failed; GPU leases retained and composition stopped");
++    }
++    state->frames.push_back(std::move(lease));
++  }
++  return rendered;
++}
++
++static void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
++  std::shared_ptr<HudState> state;
++  states.if_contains(swapchain, [&](const auto& entry) {
++    state = entry.second;
++  });
++  if (state != nullptr && (!state->frames.empty() || !state->surfaces.empty())) {
++    // ReShade's void wait_idle can return without completing a failed signal. Prove
++    // this queue's retirement with our own checked fence before releasing any lease.
++    state->api_queue->flush_immediate_command_list();
++    const auto value = ++state->fence_value;
++    bool retired = false;
++    if (SUCCEEDED(state->queue->Signal(state->fence.Get(), value))) {
++      auto completed = state->fence->GetCompletedValue();
++      retired = completed != UINT64_MAX && completed >= value;
++      if (!retired) {
++        std::unique_ptr<void, decltype(&CloseHandle)> event(CreateEventW(nullptr, FALSE, FALSE, nullptr), CloseHandle);
++        if (event != nullptr && SUCCEEDED(state->fence->SetEventOnCompletion(value, event.get()))) {
++          if (WaitForSingleObject(event.get(), 5000) == WAIT_OBJECT_0) {
++            completed = state->fence->GetCompletedValue();
++            retired = completed != UINT64_MAX && completed >= value;
++          }
++          if (!retired) state->quarantined_events.push_back(event.release());
++        }
++      }
++    }
++    if (!retired) {
++      state->stopped = true;
++      auto* data = renodx::utils::data::Get<renodx::mods::swapchain::DeviceData>(swapchain->get_device());
++      if (data != nullptr) {
++        const std::unique_lock lock(data->mutex);
++        for (const auto& [buffer, proxy] : data->swapchain_proxy_passes) {
++          state->quarantined_passes.push_back(proxy);
++        }
++        data->swapchain_proxy_passes.clear();
++      }
++      // Deliberately no static destructor: unproved GPU work must not lose its COM,
++      // descriptor or pipeline leases during addon unload. The OS reclaims them at exit.
++      static auto* retained_states = new std::vector<std::shared_ptr<HudState>>();
++      static std::shared_mutex retained_mutex;
++      {
++        const std::unique_lock lock(retained_mutex);
++        retained_states->push_back(state);
++      }
++      reshade::log::message(reshade::log::level::error,
++                            "[OXP3 HUD] GPU retirement unproved; resources and proxy passes quarantined until process exit");
++      states.erase(swapchain);
++      return;
++    }
++    state->frames.clear();
++    state->surfaces.clear();
++  }
++  if (!resize) {
++    states.erase(swapchain);
++  }
++}
++}  // namespace gtav_hdr_ui
+diff --git a/src/games/gtav-enhanced/oxp3_ffx_ui_packet.h b/src/games/gtav-enhanced/oxp3_ffx_ui_packet.h
+new file mode 100644
+index 00000000..88ebd07c
+--- /dev/null
++++ b/src/games/gtav-enhanced/oxp3_ffx_ui_packet.h
+@@ -0,0 +1,68 @@
++#pragma once
++
++// OXP3 GTA FFX UI bridge, ABI v1. MIT; copyright (c) 2026 Grippy98.
++// Producer: OptiScaler. Consumer: the maintained GTA RenoDX addon.
++#include <unknwn.h>
++#include <cstdint>
++
++inline constexpr uint32_t OXP3_FFX_UI_MAGIC = 0x4955584f; // little-endian "OXUI"
++inline constexpr uint32_t OXP3_FFX_UI_VERSION = 1;
++inline constexpr uint32_t OXP3_FFX_UI_PREMULTIPLIED = 1;
++inline constexpr uint32_t OXP3_FFX_UI_DOUBLE_BUFFERED = 2;
++
++// IDXGIObject::SetPrivateDataInterface property; GetPrivateData returns an AddRef'd IUnknown.
++inline constexpr GUID OXP3_FFX_UI_PACKET_PROPERTY =
++    {0x8e5b201f, 0x8e48, 0x49c4, {0xb3,0x51,0x88,0x55,0xd3,0xe5,0x42,0x96}};
++inline constexpr GUID IID_IOxp3FfxUiPacket =
++    {0xb53df145, 0xdc25, 0x4c89, {0x9b,0x86,0x3e,0xd2,0x41,0x87,0x65,0x61}};
++
++#pragma pack(push, 8)
++struct Oxp3FfxUiSnapshot
++{
++    uint32_t magic;
++    uint32_t version;
++    uint32_t byteSize;
++    uint32_t active; // live nonnull UI registration; independent of interpolationEnabled
++    uint64_t session;
++    uint64_t frameId; // FFX's frame ID, not Opti's resettable local frame count
++    uint32_t uiFlags;
++    uint32_t ffxState;
++    uint32_t ffxFormat;
++    uint32_t ffxType;
++    uint32_t width; // actual native UI resource width/height
++    uint32_t height;
++    uint32_t mipCount;
++    uint32_t nativeDxgiFormat;
++    int32_t rectLeft;
++    int32_t rectTop;
++    uint32_t rectWidth;
++    uint32_t rectHeight;
++    uint32_t declaredWidth;
++    uint32_t declaredHeight;
++    uint32_t declaredFlags;
++    uint32_t declaredUsage;
++    uint32_t d3d12State; // converted native state; ffxState is a DIFFERENT enum
++    uint32_t interpolationEnabled; // latest FFX request; false can still require UI on the real frame
++    uint64_t publicationId; // monotonic UI-registration serial, independent of repeated/reset FFX frame IDs
++};
++#pragma pack(pop)
++static_assert(sizeof(Oxp3FfxUiSnapshot) == 112);
++
++struct __declspec(uuid("b53df145-dc25-4c89-9b86-3ed241876561")) IOxp3FfxUiPacket : IUnknown
++{
++    virtual HRESULT STDMETHODCALLTYPE GetSnapshot(Oxp3FfxUiSnapshot* output, uint32_t outputBytes) = 0;
++    // Successful Acquire calls return a caller-owned QI reference; no borrowed pointer crosses this ABI.
++    virtual HRESULT STDMETHODCALLTYPE AcquireUiResource(REFIID iid, void** output) = 0;
++    virtual HRESULT STDMETHODCALLTYPE AcquireCommandQueue(REFIID iid, void** output) = 0;
++};
++
++// AcquireUiResource returns the original API-visible resource. The consumer must
++// resolve a native resource identity (e.g. supported ReShade unwrap QI) before
++// querying Reno tracking; pointer equality across wrappers must not be assumed.
++// Packet metadata is immutable. It owns the registered UI allocation and the native
++// game/presentation queue, never the swapchain. Content validity is UntilPresent:
++// the consumer must use the newest session/publicationId once on the same native queue,
++// before forwarding that real-frame Present to XeFG. A COM reference alone does
++// not reserve UI contents. Consumers must reject stale/repeated/mismatched packets.
++// Producer clears the property on UI null, actual FFX context destruction and physical
++// swapchain teardown. Transient SDK deactivation/paused interpolation is not UI teardown. Retained consumer GPU leases must retire via queue fences.
+diff --git a/src/games/gtav-enhanced/swap_chain_proxy_pixel_shader.ps_6_0.hlsl b/src/games/gtav-enhanced/swap_chain_proxy_pixel_shader.ps_6_0.hlsl
+index 93e3b603..2533e805 100644
+--- a/src/games/gtav-enhanced/swap_chain_proxy_pixel_shader.ps_6_0.hlsl
++++ b/src/games/gtav-enhanced/swap_chain_proxy_pixel_shader.ps_6_0.hlsl
+@@ -1,8 +1,32 @@
+ #include "./shared.h"
+ 
+ Texture2D t0 : register(t0);
++Texture2D<float4> hud_texture : register(t1);
+ SamplerState s0 : register(s0);
++cbuffer hud_bridge : register(b14, space50) {
++  float hud_enabled;
++  float3 hud_reserved;
++}
+ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
+     : SV_TARGET {
+-  return renodx::draw::SwapChainPass(t0.Sample(s0, uv));
++  float4 scene = t0.Sample(s0, uv);
++  renodx::draw::Config config = renodx::draw::BuildConfig();
++  if (hud_enabled < 0.5f) return renodx::draw::SwapChainPass(scene);
++
++  float4 hud = hud_texture.Sample(s0, uv);
++  float alpha = saturate(hud.a);
++  // Preserve the original conversion exactly for transparent UI pixels.
++  if (alpha == 0.f || !all(isfinite(hud))) return renodx::draw::SwapChainPass(scene);
++
++  // This opt-in GTA path requires encoded-space premultiplied BT.709 UI.
++  // FP16 cloning changes storage precision; it does not linearize the original UI shader.
++  float3 hud_linear = renodx::draw::DecodeColor(hud.rgb / alpha, config.swap_chain_decoding);
++  float3 combined = hud_linear;
++  if (alpha < 1.f) {
++    float3 scene_linear = renodx::draw::DecodeColor(scene.rgb, config.swap_chain_decoding);
++    combined = hud_linear * alpha + scene_linear * (1.f - alpha);
++  }
++  config.swap_chain_decoding = renodx::draw::ENCODING_NONE;
++  // Live graphics white, gamut conversion, peak clamp and PQ encoding run once.
++  return float4(renodx::draw::SwapChainPass(combined, 0, config), 1.f);
+ }
+diff --git a/src/mods/swapchain_v2.hpp b/src/mods/swapchain_v2.hpp
+index 30e9434a..54175ce7 100644
+--- a/src/mods/swapchain_v2.hpp
++++ b/src/mods/swapchain_v2.hpp
+@@ -139,6 +139,10 @@ static int32_t expected_constant_buffer_index = -1;
+ static uint32_t expected_constant_buffer_space = 0;
+ static float* shader_injection = nullptr;
+ static size_t shader_injection_size = 0;
++// Game adapters may add inputs to the final conversion without changing the shared pass layout.
++static bool (*render_swap_chain_proxy_pass)(utils::draw::SwapchainProxyPass*, reshade::api::swapchain*,
++                                          reshade::api::command_queue*) = nullptr;
++static void (*before_destroy_swap_chain_proxy_passes)(reshade::api::swapchain*, bool) = nullptr;
+ struct SwapChainProxyShaders {
+   std::span<const std::uint8_t> vertex_shader;
+   std::span<const std::uint8_t> pixel_shader;
+@@ -935,6 +939,9 @@ static void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
+ }
+ 
+ static void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
++  if (before_destroy_swap_chain_proxy_passes != nullptr) {
++    before_destroy_swap_chain_proxy_passes(swapchain, resize);
++  }
+   if (resize) {
+     // Next CreateSwapchain/InitSwapchain will be from resize (not new swapchain)
+     local_swapchain_resize = true;
+@@ -1249,7 +1256,13 @@ inline void OnPresent(
+   }
+   assert(proxy_pass != nullptr);
+ 
+-  if (!proxy_pass->Render(swapchain, queue)) {
++  bool rendered = false;
++  if (render_swap_chain_proxy_pass != nullptr) {
++    rendered = render_swap_chain_proxy_pass(proxy_pass, swapchain, queue);
++  } else {
++    rendered = proxy_pass->Render(swapchain, queue);
++  }
++  if (!rendered) {
+     proxy_pass->Destroy(device);
+     data->swapchain_proxy_passes.erase(back_buffer_handle);
+   }
+diff --git a/src/utils/draw.hpp b/src/utils/draw.hpp
+index 4cedd179..65795b3e 100644
+--- a/src/utils/draw.hpp
++++ b/src/utils/draw.hpp
+@@ -9,6 +9,7 @@
+ 
+ #include <d3d11.h>
+ #include <d3d12.h>
++#include <algorithm>
+ #include <array>
+ #include <cassert>
+ #include <cstddef>
+@@ -18,6 +19,7 @@
+ #include <shared_mutex>
+ #include <span>
+ #include <utility>
++#include <vector>
+ 
+ #include "./device.hpp"
+ #include "./mutex.hpp"
+@@ -47,7 +49,11 @@ struct SwapchainProxyPass {
+   bool Render(
+       reshade::api::swapchain* swapchain,
+       reshade::api::command_queue* queue,
+-      const reshade::api::resource* swapchain_clone_override = nullptr) {
++      const reshade::api::resource* swapchain_clone_override = nullptr,
++      std::span<const reshade::api::resource> additional_shader_resources = {},
++      std::span<const float> additional_constants = {},
++      uint32_t additional_constant_index = 0,
++      uint32_t additional_constant_space = 0) {
+     auto* cmd_list = queue->get_immediate_command_list();
+     auto current_back_buffer = swapchain->get_current_back_buffer();
+     auto* device = swapchain->get_device();
+@@ -240,13 +246,17 @@ struct SwapchainProxyPass {
+       pass.render_target_slots.resource_descs.clear();
+     }
+ 
++    std::vector<reshade::api::resource> shader_resources = {swapchain_clone};
++    shader_resources.insert(shader_resources.end(), additional_shader_resources.begin(), additional_shader_resources.end());
+     const bool shader_resource_changed =
+-        pass.shader_resource_slots.resources.size() != 1
+-        || pass.shader_resource_slots.resources[0].handle != swapchain_clone.handle;
++        pass.shader_resource_slots.resources.size() != shader_resources.size()
++        || !std::equal(shader_resources.begin(), shader_resources.end(),
++                       pass.shader_resource_slots.resources.begin(),
++                       [](const auto first, const auto second) { return first.handle == second.handle; });
+     if (shader_resource_changed) {
+       pass.shader_resource_slots.views.clear();
+       pass.shader_resource_slots.view_descs.clear();
+-      pass.shader_resource_slots.resources = {swapchain_clone};
++      pass.shader_resource_slots.resources = std::move(shader_resources);
+       pass.shader_resource_slots.resource_descs.clear();
+     }
+ #ifdef DEBUG_LEVEL_2
+@@ -290,11 +300,23 @@ struct SwapchainProxyPass {
+       pass.push_constants[slot] = std::span<const float>(shader_injection, shader_injection_size);
+     }
+ 
++    const renodx::utils::render::ConstantBuffersSlots additional_slot = {
++        .slot = static_cast<uint8_t>(additional_constant_index),
++        .space = static_cast<uint8_t>(additional_constant_space),
++    };
++    if (!additional_constants.empty()) {
++      pass.push_constants[additional_slot] = additional_constants;
++    }
++
+     if (auto_device_flush && !uses_root_constants) {
+       pass.flush_after_render = true;
+     }
+ 
+-    if (!pass.Render(cmd_list, queue)) {
++    const bool rendered = pass.Render(cmd_list, queue);
++    if (!additional_constants.empty()) {
++      pass.push_constants.erase(additional_slot);
++    }
++    if (!rendered) {
+ #ifdef DEBUG_LEVEL_2
+       reshade::log::message(reshade::log::level::warning, "utils::draw::SwapchainProxyPass::Render(RenderPass::Render failed)");
+ #endif
