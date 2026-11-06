@@ -1,6 +1,7 @@
 {
   "repository": "https://github.com/daniel-h-0/OptiScaler",
   "commit": "273e8d449763d0e9e051dee831dc42badcd15d00",
-  "patch_sha256": "60910735aa75288a818ec40b6abb7b5ecfdfb2b05e6382b87d0c20356780616e",
-  "status": "Bounded metadata-only UI registration probe atop the native XeFG/ReShade ownership diagnostic. No pixel readback, clone lookup/creation or rendering changes; not yet compiled/runtime-qualified."
+  "patch_sha256": "0271ab4c41ba8e7d1fba6ed7e0a1844844676100ce6c3669b874a646764914c2",
+  "status": "Experimental GTA UI COM packet producer atop qualified native XeFG/ReShade pipeline. Provides owned UI/queue metadata to an optional RenoDX consumer; no composition shader change or GPU copy is made by this producer. Not compiled/runtime-qualified yet.",
+  "ui_packet_header_sha256": "2ad88daaf8526a15769faa260bd02c4a3ead7e55073cfa3a846062fcdeec0fe7"
 }

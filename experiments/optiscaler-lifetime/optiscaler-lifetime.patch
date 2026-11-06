@@ -1,16 +1,17 @@
 diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
-index 492e5553..6557c7aa 100644
+index 492e5553..bb2b19fc 100644
 --- a/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
 +++ b/OptiScaler/framegen/xefg/XeFG_Dx12.cpp
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
  #include <hudfix/Hudfix_Dx12.h>
  
  #include <menu/menu_overlay_dx.h>
 +#include <hooks/FG_Hooks.h>
++#include <inputs/FG/FfxApi_Dx12_FG.h>
  #include <resource_tracking/ResTrack_dx12.h>
  
  #include <magic_enum.hpp>
-@@ -12,6 +13,7 @@
+@@ -12,6 +14,7 @@
  #include <DirectXMath.h>
  
  using namespace DirectX;
@@ -18,7 +19,7 @@ index 492e5553..6557c7aa 100644
  
  void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_level_t level, void* userData)
  {
-@@ -48,19 +50,27 @@ int XeFG_Dx12::QueryMaxInterpolationCount(ID3D12Device* device)
+@@ -48,19 +51,27 @@ int XeFG_Dx12::QueryMaxInterpolationCount(ID3D12Device* device)
      ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
  #endif // !DONT_USE_XMX
  
@@ -48,7 +49,7 @@ index 492e5553..6557c7aa 100644
  
      if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
      {
-@@ -80,6 +90,19 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+@@ -80,6 +91,19 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
          return false;
      }
  
@@ -68,7 +69,7 @@ index 492e5553..6557c7aa 100644
      auto createResult = false;
  
  #ifndef DONT_USE_XMX
-@@ -88,11 +111,12 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+@@ -88,11 +112,12 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
  
      do
      {
@@ -82,7 +83,7 @@ index 492e5553..6557c7aa 100644
              return false;
          }
  
-@@ -107,7 +131,7 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
+@@ -107,7 +132,7 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
  
          // XeFG reads the frames of the XeLL context it gets: the XeLL output's, or its own next to a Reflex or
          // AntiLag 2 output. Either stays valid until this context is destroyed.
@@ -91,15 +92,16 @@ index 492e5553..6557c7aa 100644
          {
              result = XeFGProxy::SetLatencyReduction()(_swapChainContext, xellContext);
  
-@@ -166,6 +190,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -166,6 +191,8 @@ bool XeFG_Dx12::DestroySwapchainContext()
  
      if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
      {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "XeFG SDK context teardown");
 +        FGHooks::ReleaseCapturedFGSwapchain();
          auto context = _swapChainContext;
          _swapChainContext = nullptr;
  
-@@ -177,6 +202,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -177,6 +204,7 @@ bool XeFG_Dx12::DestroySwapchainContext()
          if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
          {
              _swapChainContext = context;
@@ -107,7 +109,7 @@ index 492e5553..6557c7aa 100644
          }
          else
          {
-@@ -184,12 +210,38 @@ bool XeFG_Dx12::DestroySwapchainContext()
+@@ -184,12 +212,38 @@ bool XeFG_Dx12::DestroySwapchainContext()
  
              // Its XeLL context isn't read anymore
              InputCommon::release_xefg_xell();
@@ -146,7 +148,7 @@ index 492e5553..6557c7aa 100644
  xefg_swapchain_d3d12_resource_data_t XeFG_Dx12::GetResourceData(FG_ResourceType type, int index)
  {
      if (index < 0)
-@@ -252,7 +304,8 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+@@ -252,7 +306,8 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
          if (State::Instance().currentD3D12Device == nullptr)
              return false;
  
@@ -156,7 +158,7 @@ index 492e5553..6557c7aa 100644
  
          if (_swapChainContext == nullptr)
              return false;
-@@ -274,14 +327,12 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
+@@ -274,14 +329,12 @@ bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueu
      }
  
      IDXGIFactory* realFactory = nullptr;
@@ -173,7 +175,7 @@ index 492e5553..6557c7aa 100644
      IDXGIFactory2* factory12 = nullptr;
      if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
          return false;
-@@ -419,7 +470,8 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+@@ -419,7 +472,8 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
          if (State::Instance().currentD3D12Device == nullptr)
              return false;
  
@@ -183,7 +185,7 @@ index 492e5553..6557c7aa 100644
  
          if (_swapChainContext == nullptr)
              return false;
-@@ -441,14 +493,12 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
+@@ -441,14 +495,12 @@ bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQue
      }
  
      IDXGIFactory* realFactory = nullptr;
@@ -200,7 +202,7 @@ index 492e5553..6557c7aa 100644
      IDXGIFactory2* factory12 = nullptr;
      if (realFactory->QueryInterface(IID_PPV_ARGS(&factory12)) != S_OK)
          return false;
-@@ -547,8 +597,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+@@ -547,8 +599,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
  {
      LOG_DEBUG("");
  
@@ -214,7 +216,7 @@ index 492e5553..6557c7aa 100644
  
      if (_fgContext == nullptr && _swapChainContext != nullptr)
      {
-@@ -568,6 +622,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
+@@ -568,6 +624,12 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
  void XeFG_Dx12::Activate()
  {
      LOG_DEBUG("");
@@ -227,7 +229,7 @@ index 492e5553..6557c7aa 100644
  
      auto currentFeature = State::Instance().currentFeature;
      bool nativeAA = false;
-@@ -659,7 +719,7 @@ bool XeFG_Dx12::Shutdown()
+@@ -659,7 +721,7 @@ bool XeFG_Dx12::Shutdown()
      ReleaseObjects();
  
      if (_swapChainContext != nullptr)
@@ -236,7 +238,7 @@ index 492e5553..6557c7aa 100644
  
      return true;
  }
-@@ -984,7 +1044,18 @@ void* XeFG_Dx12::FrameGenerationContext() { return _fgContext; }
+@@ -984,7 +1046,18 @@ void* XeFG_Dx12::FrameGenerationContext() { return _fgContext; }
  
  void* XeFG_Dx12::SwapchainContext() { return _swapChainContext; }
  
@@ -256,7 +258,7 @@ index 492e5553..6557c7aa 100644
  
  bool XeFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
  
-@@ -1090,6 +1161,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
+@@ -1090,6 +1163,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
  
  void XeFG_Dx12::ReleaseObjects()
  {
@@ -265,7 +267,7 @@ index 492e5553..6557c7aa 100644
      for (size_t i = 0; i < BUFFER_COUNT; i++)
      {
          SAFE_RELEASE(_uiCommandAllocator[i]);
-@@ -1112,23 +1185,46 @@ void XeFG_Dx12::ReleaseObjects()
+@@ -1112,23 +1187,46 @@ void XeFG_Dx12::ReleaseObjects()
      _depthInvert.reset();
  
      ReleaseResourceCopies();
@@ -317,7 +319,7 @@ index 492e5553..6557c7aa 100644
  
          // FG
          for (size_t i = 0; i < BUFFER_COUNT; i++)
-@@ -1149,8 +1245,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+@@ -1149,8 +1247,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
              }
  
              _uiCommandAllocator[i]->SetName(std::format(L"_uiCommandAllocator[{}]", i).c_str());
@@ -326,7 +328,7 @@ index 492e5553..6557c7aa 100644
  
              result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _uiCommandAllocator[i], NULL,
                                                   IID_PPV_ARGS(&_uiCommandList[i]));
-@@ -1160,8 +1254,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+@@ -1160,8 +1256,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
                  break;
              }
              _uiCommandList[i]->SetName(std::format(L"_uiCommandList[{}]", i).c_str());
@@ -335,7 +337,7 @@ index 492e5553..6557c7aa 100644
  
              result = _uiCommandList[i]->Close();
              if (result != S_OK)
-@@ -1199,8 +1291,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+@@ -1199,8 +1293,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
              }
  
              _scCommandAllocator[i]->SetName(std::format(L"_scCommandAllocator[{}]", i).c_str());
@@ -344,7 +346,7 @@ index 492e5553..6557c7aa 100644
  
              result = InDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _scCommandAllocator[i], NULL,
                                                   IID_PPV_ARGS(&_scCommandList[i]));
-@@ -1210,8 +1300,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+@@ -1210,8 +1302,6 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
                  break;
              }
              _scCommandList[i]->SetName(std::format(L"_scCommandList[{}]", i).c_str());
@@ -353,7 +355,7 @@ index 492e5553..6557c7aa 100644
  
              result = _scCommandList[i]->Close();
              if (result != S_OK)
-@@ -1239,9 +1327,12 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
+@@ -1239,9 +1329,12 @@ void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
                      break;
                  }
              }
@@ -366,7 +368,7 @@ index 492e5553..6557c7aa 100644
  }
  
  bool XeFG_Dx12::Present()
-@@ -1584,8 +1675,23 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+@@ -1584,8 +1677,23 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
              (XeFGProxy::SetUiCompositionState() != nullptr || Config::Instance()->FGDrawUIOverFG.value_or_default()))
          {
              auto frameId = static_cast<uint32_t>(_frameCount - indexDiff);
@@ -391,7 +393,7 @@ index 492e5553..6557c7aa 100644
              LOG_DEBUG("D3D12TagFrameResource, frameId: {}, type: {} result: {} ({})", frameId,
                        magic_enum::enum_name(type), magic_enum::enum_name(result), (int32_t) result);
  
-@@ -1614,7 +1720,18 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
+@@ -1614,7 +1722,18 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
      return true;
  }
  
@@ -411,8 +413,11 @@ index 492e5553..6557c7aa 100644
  
  bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
  {
-@@ -1645,10 +1762,13 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+@@ -1643,12 +1762,16 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
+ 
+     if (!State::Instance().isShuttingDown)
      {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "physical XeFG swapchain teardown");
          State::Instance().currentFGSwapchain = nullptr;
  
 -        if (_swapChainContext != nullptr)
@@ -430,7 +435,7 @@ index 492e5553..6557c7aa 100644
  
      ReleaseObjects();
 diff --git a/OptiScaler/framegen/xefg/XeFG_Dx12.h b/OptiScaler/framegen/xefg/XeFG_Dx12.h
-index 93f004a2..2e67b5e1 100644
+index 93f004a2..c4127f3b 100644
 --- a/OptiScaler/framegen/xefg/XeFG_Dx12.h
 +++ b/OptiScaler/framegen/xefg/XeFG_Dx12.h
 @@ -7,6 +7,7 @@
@@ -456,6 +461,16 @@ index 93f004a2..2e67b5e1 100644
  
      uint32_t _width = 0;
      uint32_t _height = 0;
+@@ -45,6 +54,9 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
+     void CreateObjects(ID3D12Device* InDevice) override final;
+ 
+   public:
++    // UI composition follows the SDK's initial presentation queue, not a later resource-work queue.
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> AcquireUiPresentationQueue() const { return _sdkGameQueue; }
++
+     // Uses a temporary context, works before our FG swapchain exists. Returns 0 on failure
+     static int QueryMaxInterpolationCount(ID3D12Device* device);
+ 
 diff --git a/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h b/OptiScaler/framegen/xefg/XeFG_NativeD3D12.h
 new file mode 100644
 index 00000000..f114ffcb
@@ -523,10 +538,10 @@ index 00000000..f114ffcb
 +}
 +} // namespace XeFGNative
 diff --git a/OptiScaler/hooks/FG_Hooks.cpp b/OptiScaler/hooks/FG_Hooks.cpp
-index a60e1bc6..a5220ac6 100644
+index a60e1bc6..049177fc 100644
 --- a/OptiScaler/hooks/FG_Hooks.cpp
 +++ b/OptiScaler/hooks/FG_Hooks.cpp
-@@ -22,10 +22,116 @@
+@@ -22,10 +22,117 @@
  #include <imgui/ImGuiNotify.hpp>
  
  #include <d3d12.h>
@@ -560,6 +575,7 @@ index a60e1bc6..a5220ac6 100644
 +{
 +    if (visible == nullptr)
 +        return;
++    ffxClearUiPacket_Dx12FG(sdkSwapchain, "owned outer reference released");
 +    const bool wasReleasing = releasingOwnedFG;
 +    releasingOwnedFG = true;
 +    const auto refs = visible->Release(); // release only the reference this bridge owns
@@ -643,17 +659,28 @@ index a60e1bc6..a5220ac6 100644
  static ID3D12Fence* resizeFence = nullptr;
  static UINT64 resizeFenceValue = 0;
  static HANDLE resizeFenceEvent = nullptr;
-@@ -352,6 +458,9 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+@@ -352,6 +459,12 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
      if (pSwapChain == nullptr)
          return;
  
 +    if (State::Instance().currentFGSwapchain != nullptr && State::Instance().currentFGSwapchain != pSwapChain)
++    {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "physical swapchain replaced");
 +        ReleaseCapturedFGSwapchain();
++    }
 +
      _hwnd = hWnd;
  
      if (_dx12InteropPresentSC == pSwapChain)
-@@ -401,6 +510,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+@@ -364,6 +477,7 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+     State::Instance().currentSwapchain = pSwapChain;
+ 
+     HookFGSwapchain(pSwapChain);
++    ffxBeginUiPacketSession_Dx12FG(pSwapChain);
+ }
+ 
+ void FGHooks::SetDx12InteropPresentSC(IDXGISwapChain* pSwapChain, HWND hWnd)
+@@ -401,6 +515,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
      void** pFactoryVTable = *reinterpret_cast<void***>(pSwapChain);
  
      o_FGRelease = (PFN_Release) pFactoryVTable[2];
@@ -661,7 +688,7 @@ index a60e1bc6..a5220ac6 100644
      o_FGSCPresent = (PFN_Present) pFactoryVTable[8];
      o_FGSCSetFullscreenState = (PFN_SetFullscreenState) pFactoryVTable[10];
      o_FGSCGetFullscreenState = (PFN_GetFullscreenState) pFactoryVTable[11];
-@@ -429,6 +539,8 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+@@ -429,6 +544,8 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
          DetourUpdateThread(GetCurrentThread());
  
          DetourAttach(&(PVOID&) o_FGRelease, hkFGRelease);
@@ -670,7 +697,7 @@ index a60e1bc6..a5220ac6 100644
          DetourAttach(&(PVOID&) o_FGSCPresent, hkFGPresent);
          DetourAttach(&(PVOID&) o_FGSCResizeTarget, hkResizeTarget);
          DetourAttach(&(PVOID&) o_FGSCResizeBuffers, hkResizeBuffers);
-@@ -462,6 +574,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+@@ -462,6 +579,7 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
          {
              LOG_ERROR("Failed to attach detour: {:X}", detourResult);
              o_FGRelease = nullptr;
@@ -678,7 +705,7 @@ index a60e1bc6..a5220ac6 100644
              o_FGSCPresent = nullptr;
              o_FGSCSetFullscreenState = nullptr;
              o_FGSCGetFullscreenState = nullptr;
-@@ -1367,11 +1480,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
+@@ -1367,11 +1485,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
      {
          xefg_swapchain_present_status_t status {};
  
@@ -697,7 +724,7 @@ index a60e1bc6..a5220ac6 100644
      }
  
      if (result == S_OK)
-@@ -1456,7 +1572,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
+@@ -1456,7 +1577,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
  
      static bool skipReleaseChecks = false;
  
@@ -706,6 +733,14 @@ index a60e1bc6..a5220ac6 100644
          return o_FGRelease(This);
  
      This->AddRef();
+@@ -1465,6 +1586,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
+     {
+         if (o_FGRelease(This) == 1)
+         {
++            ffxClearUiPacket_Dx12FG(static_cast<IDXGISwapChain*>(This), "final SDK proxy release");
+             LOG_DEBUG("");
+ 
+             if (State::Instance().currentCommandQueue != nullptr && resizeFence != nullptr &&
 diff --git a/OptiScaler/hooks/FG_Hooks.h b/OptiScaler/hooks/FG_Hooks.h
 index 6da5b766..2e263234 100644
 --- a/OptiScaler/hooks/FG_Hooks.h
@@ -753,15 +788,22 @@ index 6da5b766..2e263234 100644
 +    VALIDATE_MEMBER_HOOK(hkFGSetPrivateData, PFN_SetPrivateData)
  };
 diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
-index b303eebd..6f4c843b 100644
+index b303eebd..61d67b0a 100644
 --- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
 +++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp
-@@ -4,6 +4,13 @@
+@@ -1,9 +1,20 @@
+ #include "pch.h"
+ 
+ #include "FfxApi_Dx12_FG.h"
++#include "oxp3_ffx_ui_packet.h"
++#include <atomic>
++#include <new>
  
  #include <Util.h>
  #include <Config.h>
 +#include <hooks/FG_Hooks.h>
 +#include <framegen/xefg/XeFG_NativeD3D12.h>
++#include <framegen/xefg/XeFG_Dx12.h>
 +#include <wrl/client.h>
 +#include <memory>
 +#include <mutex>
@@ -770,7 +812,7 @@ index b303eebd..6f4c843b 100644
  #include <misc/DeferredRelease.h>
  
  #include <magic_enum.hpp>
-@@ -64,7 +71,283 @@ struct ffxDispatchDescFrameGenerationPrepareV2
+@@ -64,7 +75,284 @@ struct ffxDispatchDescFrameGenerationPrepareV2
      float cameraForward[3];  ///< The camera forward normalized vector in world space
  };
  
@@ -951,6 +993,7 @@ index b303eebd..6f4c843b 100644
 +        std::lock_guard lock(ownedFfxMutex);
 +        ownedFfxSwapchains.emplace(*context, lease);
 +    }
++    ffxBeginUiPacketSession_Dx12FG(sdk);
 +    LOG_INFO("GTA FFX adopted API-visible ReShade outer {:X}, SDK {:X}, context {:X}; no recreation or caller Release",
 +             (size_t)*output, (size_t)sdk, (size_t)*context);
 +    return FFX_API_RETURN_OK;
@@ -1054,7 +1097,261 @@ index b303eebd..6f4c843b 100644
  static FG_Constants _fgConst {};
  
  static FfxApiPresentCallbackFunc _presentCallback = nullptr;
-@@ -339,6 +622,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+@@ -242,6 +530,245 @@ static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Reso
+     InCommandList->ResourceBarrier(1, &barrier);
+ }
+ 
++namespace
++{
++class FfxUiPacket final : public IOxp3FfxUiPacket
++{
++    std::atomic<ULONG> references {1};
++    const Oxp3FfxUiSnapshot snapshot;
++    const Microsoft::WRL::ComPtr<ID3D12Resource> resource;
++    const Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
++    ~FfxUiPacket() = default;
++  public:
++    FfxUiPacket(const Oxp3FfxUiSnapshot& value, Microsoft::WRL::ComPtr<ID3D12Resource> ui,
++                Microsoft::WRL::ComPtr<ID3D12CommandQueue> gameQueue)
++        : snapshot(value), resource(std::move(ui)), queue(std::move(gameQueue)) {}
++    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        if (iid != IID_IUnknown && iid != IID_IOxp3FfxUiPacket) return E_NOINTERFACE;
++        *output = static_cast<IOxp3FfxUiPacket*>(this);
++        AddRef();
++        return S_OK;
++    }
++    ULONG STDMETHODCALLTYPE AddRef() override { return references.fetch_add(1, std::memory_order_relaxed) + 1; }
++    ULONG STDMETHODCALLTYPE Release() override
++    {
++        const auto left = references.fetch_sub(1, std::memory_order_acq_rel) - 1;
++        if (left == 0) delete this;
++        return left;
++    }
++    HRESULT STDMETHODCALLTYPE GetSnapshot(Oxp3FfxUiSnapshot* output, uint32_t bytes) override
++    {
++        if (output == nullptr) return E_POINTER;
++        if (bytes < sizeof(snapshot)) return E_INVALIDARG;
++        *output = snapshot;
++        return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE AcquireUiResource(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        return resource == nullptr ? E_UNEXPECTED : resource->QueryInterface(iid, output);
++    }
++    HRESULT STDMETHODCALLTYPE AcquireCommandQueue(REFIID iid, void** output) override
++    {
++        if (output == nullptr) return E_POINTER;
++        *output = nullptr;
++        return queue == nullptr ? E_UNEXPECTED : queue->QueryInterface(iid, output);
++    }
++};
++
++struct UiPacketSession
++{
++    IDXGISwapChain* carrier = nullptr; // borrowed; lifecycle calls serialize before physical teardown
++    uint64_t generation = 1;
++    uint64_t publication = 0;
++    uint64_t frameId = 0;
++    uint64_t frameRevision = 0;
++    FfxApiRect2D rect {};
++    bool configured = false;
++    bool live = false;
++    bool interpolationEnabled = false;
++    bool published = false;
++    unsigned logCount = 0;
++};
++static std::mutex uiPacketMutex;
++static UiPacketSession uiPacketSession;
++
++static bool IsGtaUiBridge()
++{
++    return _wcsicmp(Util::ExePath().filename().c_str(), L"GTA5_Enhanced.exe") == 0;
++}
++
++static void RecordUiPacketFrame(uint64_t frameId, const FfxApiRect2D& rect, bool interpolationEnabled)
++{
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    auto carrier = State::Instance().currentFGSwapchain;
++    // A frame update cannot revive a carrier that teardown has marked closed.
++    // Only an explicit physical/FFX session begin may establish a live carrier.
++    if (carrier == nullptr || carrier != uiPacketSession.carrier || !uiPacketSession.live) return;
++    ++uiPacketSession.frameRevision;
++    uiPacketSession.frameId = frameId;
++    uiPacketSession.rect = rect;
++    uiPacketSession.configured = carrier != nullptr;
++    uiPacketSession.interpolationEnabled = interpolationEnabled;
++}
++} // namespace
++
++namespace
++{
++// Requires uiPacketMutex. Physical teardown calls this before releasing its live
++// carrier; asynchronous publishers may clear only after matching their captured epoch.
++static void ClearUiPacketLocked(IDXGISwapChain* carrier, const char* reason, bool preserveFrame)
++{
++    if (carrier != nullptr && carrier == uiPacketSession.carrier && uiPacketSession.live)
++        carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++    if (carrier == nullptr || carrier == uiPacketSession.carrier)
++    {
++        if (uiPacketSession.published)
++            LOG_INFO("UI_PACKET clear: {} session={}", reason, uiPacketSession.generation);
++        if (!preserveFrame || carrier == nullptr || carrier != uiPacketSession.carrier)
++        {
++            uiPacketSession.carrier = nullptr;
++            uiPacketSession.configured = false;
++            uiPacketSession.live = false;
++        }
++        uiPacketSession.published = false;
++        uiPacketSession.logCount = 0;
++        ++uiPacketSession.generation;
++        ++uiPacketSession.frameRevision;
++    }
++}
++static void ClearFailedUiPublication(const UiPacketSession& registration, const char* reason)
++{
++    std::lock_guard lock(uiPacketMutex);
++    if (!uiPacketSession.live || registration.carrier != uiPacketSession.carrier ||
++        registration.generation != uiPacketSession.generation ||
++        registration.publication != uiPacketSession.publication)
++        return; // carrier may be gone, or a newer registration already won
++    ClearUiPacketLocked(registration.carrier, reason, true);
++}
++} // namespace
++
++void ffxClearUiPacket_Dx12FG(IDXGISwapChain* carrier, const char* reason, bool preserveFrame)
++{
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    ClearUiPacketLocked(carrier, reason, preserveFrame);
++}
++
++void ffxBeginUiPacketSession_Dx12FG(IDXGISwapChain* carrier)
++{
++    ffxClearUiPacket_Dx12FG(carrier, "new FFX/physical swapchain session");
++    if (!IsGtaUiBridge()) return;
++    std::lock_guard lock(uiPacketMutex);
++    uiPacketSession.carrier = carrier;
++    uiPacketSession.live = carrier != nullptr;
++}
++
++static void PublishFfxUiPacket(const FfxApiResource& ui, uint32_t flags, IFGFeature_Dx12* fg)
++{
++    if (!IsGtaUiBridge() || fg == nullptr) return;
++    auto carrier = State::Instance().currentFGSwapchain;
++    if (ui.resource == nullptr)
++    {
++        ffxClearUiPacket_Dx12FG(carrier, "null FFX UI registration", true);
++        return;
++    }
++    if (carrier == nullptr) return;
++    UiPacketSession registration;
++    Microsoft::WRL::ComPtr<ID3D12CommandQueue> registrationQueue;
++    {
++        std::lock_guard lock(uiPacketMutex);
++        if (carrier != uiPacketSession.carrier || !uiPacketSession.live || !uiPacketSession.configured) return;
++        // Use fg only at the existing FFX callback entry. Own its queue before any
++        // subsequent COM query can delay; never dereference fg after that delay.
++        auto* xefg = dynamic_cast<XeFG_Dx12*>(fg); // virtual IFG base: use checked RTTI, never static downcast
++        if (xefg == nullptr) return;
++        registrationQueue = xefg->AcquireUiPresentationQueue();
++        ++uiPacketSession.publication;
++        registration = uiPacketSession;
++    }
++    // Only resource/queue references cross the ABI. The packet never owns its
++    // carrier swapchain, so attaching it cannot create a swapchain reference cycle.
++    Microsoft::WRL::ComPtr<ID3D12Resource> original;
++    if (FAILED(static_cast<IUnknown*>(ui.resource)->QueryInterface(IID_PPV_ARGS(original.GetAddressOf()))) || original == nullptr)
++    {
++        ClearFailedUiPublication(registration, "UI resource QI failed");
++        return;
++    }
++    auto nativeResource = XeFGNative::Unwrap<ID3D12Resource>(original.Get());
++    auto nativeQueue = XeFGNative::Unwrap<ID3D12CommandQueue>(registrationQueue.Get());
++    Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
++    if (nativeResource == nullptr || nativeQueue == nullptr ||
++        nativeQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
++        FAILED(nativeQueue->GetDevice(IID_PPV_ARGS(queueDevice.GetAddressOf()))) ||
++        !XeFGNative::MatchesDevice(nativeResource.Get(), queueDevice.Get()))
++    {
++        ClearFailedUiPublication(registration, "UI/queue native device mismatch");
++        return;
++    }
++    const auto actual = nativeResource->GetDesc();
++    if (actual.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || actual.Width > UINT32_MAX || actual.SampleDesc.Count != 1)
++    {
++        ClearFailedUiPublication(registration, "unsupported UI resource description");
++        return;
++    }
++    std::lock_guard lock(uiPacketMutex);
++    if (carrier != uiPacketSession.carrier || carrier != State::Instance().currentFGSwapchain ||
++        registration.generation != uiPacketSession.generation || !uiPacketSession.live ||
++        registration.frameRevision != uiPacketSession.frameRevision ||
++        registration.publication != uiPacketSession.publication || !uiPacketSession.configured)
++        return;
++    Oxp3FfxUiSnapshot value {};
++    value.magic = OXP3_FFX_UI_MAGIC;
++    value.version = OXP3_FFX_UI_VERSION;
++    value.byteSize = sizeof(value);
++    value.active = 1; // UI composition can still be needed while interpolation is paused/disabled.
++    value.session = registration.generation;
++    value.frameId = registration.frameId;
++    value.publicationId = registration.publication;
++    value.uiFlags = flags;
++    value.ffxState = ui.state;
++    value.d3d12State = static_cast<uint32_t>(GetD3D12State(static_cast<FfxApiResourceState>(ui.state)));
++    value.ffxFormat = ui.description.format;
++    value.ffxType = ui.description.type;
++    value.width = static_cast<uint32_t>(actual.Width);
++    value.height = actual.Height;
++    value.mipCount = actual.MipLevels;
++    value.nativeDxgiFormat = actual.Format;
++    value.rectLeft = registration.rect.left;
++    value.rectTop = registration.rect.top;
++    value.rectWidth = registration.rect.width;
++    value.rectHeight = registration.rect.height;
++    value.declaredWidth = ui.description.width;
++    value.declaredHeight = ui.description.height;
++    value.declaredFlags = ui.description.flags;
++    value.declaredUsage = ui.description.usage;
++    value.interpolationEnabled = registration.interpolationEnabled;
++    Microsoft::WRL::ComPtr<IOxp3FfxUiPacket> packet;
++    packet.Attach(new (std::nothrow) FfxUiPacket(value, std::move(original), std::move(nativeQueue)));
++    if (packet == nullptr)
++    {
++        carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++        uiPacketSession.published = false;
++        return;
++    }
++    // Serialize attachment with the lifecycle clears. Packet methods and its
++    // destructor never acquire uiPacketMutex; no borrowed UI pointer is retained.
++    const auto result = carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, packet.Get());
++    uiPacketSession.published = SUCCEEDED(result);
++    if (FAILED(result)) carrier->SetPrivateDataInterface(OXP3_FFX_UI_PACKET_PROPERTY, nullptr);
++    if (uiPacketSession.logCount++ < 8)
++        LOG_INFO("UI_PACKET publish session={} publication={} frame={} carrier={:X} format={} size={}x{} flags={:X} ffxState={:X} nativeState={:X} interpolation={} result={:X}",
++                 value.session, value.publicationId, value.frameId, (size_t)carrier, value.nativeDxgiFormat,
++                 value.width, value.height, value.uiFlags, value.ffxState, value.d3d12State,
++                 value.interpolationEnabled, (UINT)result);
++}
++
+ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDescHeader* desc,
+                                         const ffxAllocationCallbacks* memCb)
+ {
+@@ -316,6 +843,7 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+             s.currentFG->CreateContext(_device, _fgConst);
+ 
+             *context = (ffxContext) fgContext;
++            ffxBeginUiPacketSession_Dx12FG(s.currentFGSwapchain);
+             return FFX_API_RETURN_OK;
+         }
+     }
+@@ -339,6 +867,28 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
      {
          auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainNewDX12*) desc;
  
@@ -1083,7 +1380,7 @@ index b303eebd..6f4c843b 100644
          if (State::Instance().currentWrappedSwapchain != nullptr &&
              State::Instance().currentSwapchainDesc.OutputWindow == cDesc->desc->OutputWindow)
          {
-@@ -381,6 +686,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
+@@ -381,6 +931,11 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
      {
          auto cDesc = (ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*) desc;
  
@@ -1095,7 +1392,7 @@ index b303eebd..6f4c843b 100644
          IDXGIFactory2* factory = nullptr;
          auto scResult = cDesc->dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
  
-@@ -439,6 +749,25 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+@@ -439,8 +994,29 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
  
      LOG_DEBUG("");
  
@@ -1113,6 +1410,7 @@ index b303eebd..6f4c843b 100644
 +    }
 +    if (owned != nullptr)
 +    {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "owned FFX swapchain context destroyed");
 +        LOG_INFO("GTA destroying owned FFX swapchain lease {:X}; preserving SDK context", (size_t)owned.get());
 +        owned.reset(); // release exactly the context-owned outer reference, outside registry lock
 +        return FFX_API_RETURN_OK;
@@ -1120,36 +1418,58 @@ index b303eebd..6f4c843b 100644
 +
      if (State::Instance().currentFG != nullptr && (void*) scContext == *context)
      {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "FFX swapchain context destroyed");
          LOG_INFO("Destroying Swapchain Context: {:X}", (size_t) State::Instance().currentFG);
-@@ -592,6 +921,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+         State::Instance().currentFG->ReleaseSwapchain(State::Instance().currentFG->Hwnd());
+ 
+@@ -461,6 +1037,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
+     }
+     else if (State::Instance().currentFG != nullptr && (void*) fgContext == *context)
+     {
++        ffxClearUiPacket_Dx12FG(State::Instance().currentFGSwapchain, "FFX frame-generation context destroyed");
+         LOG_INFO("Destroying FG Context: {:X}", (size_t) State::Instance().currentFG);
+         State::Instance().currentFG->DestroyFGContext();
+         ReleaseBuffers();
+@@ -517,6 +1094,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+     if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION)
+     {
+         auto cDesc = (ffxConfigureDescFrameGeneration*) desc;
++        RecordUiPacketFrame(cDesc->frameID, cDesc->generationRect, cDesc->frameGenerationEnabled);
+ 
+         CheckForFrame(fg, cDesc->frameID);
+         fg->SetFrameCount(cDesc->frameID);
+@@ -592,6 +1170,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
              {
                  auto crDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) next;
                  LOG_DEBUG("UiResource found 1: {:X}", (size_t) crDesc->uiResource.resource);
 +                ProbeFfxUiResource("configure-pNext", crDesc->uiResource, crDesc->flags, fg, cDesc->frameID, fIndex);
++                PublishFfxUiPacket(crDesc->uiResource, crDesc->flags, fg);
  
                  if (fg->FrameGenerationContext() != nullptr && crDesc->uiResource.resource != nullptr)
                  {
-@@ -722,6 +1052,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+@@ -722,6 +1302,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
                  {
                      auto uiDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) next;
                      LOG_DEBUG("UiResource found 2: {:X}", (size_t) uiDesc->uiResource.resource);
 +                    ProbeFfxUiResource("distortion-pNext", uiDesc->uiResource, uiDesc->flags, fg, fg->FrameCount());
++                    PublishFfxUiPacket(uiDesc->uiResource, uiDesc->flags, fg);
  
                      if (fg->FrameGenerationContext() != nullptr && uiDesc->uiResource.resource != nullptr)
                      {
-@@ -778,6 +1109,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+@@ -778,6 +1360,8 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
      {
          auto crDesc = (ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*) desc;
          LOG_DEBUG("UiResource found 3: {:X}", (size_t) crDesc->uiResource.resource);
 +        ProbeFfxUiResource("ui-direct", crDesc->uiResource, crDesc->flags, fg, fg->FrameCount());
++        PublishFfxUiPacket(crDesc->uiResource, crDesc->flags, fg);
  
          if (fg->FrameGenerationContext() != nullptr && crDesc->uiResource.resource != nullptr)
          {
 diff --git a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
-index 98259afa..41a717bf 100644
+index 98259afa..8d6d10a7 100644
 --- a/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
 +++ b/OptiScaler/inputs/FG/FfxApi_Dx12_FG.h
-@@ -14,3 +14,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
+@@ -14,3 +14,11 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
  ffxReturnCode_t ffxQuery_Dx12FG(ffxContext* context, ffxQueryDescHeader* desc);
  ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* desc);
  void ffxPresentCallback();
@@ -1157,6 +1477,84 @@ index 98259afa..41a717bf 100644
 +// Owned diagnostic contexts are recognized before any native-provider fallback.
 +bool ffxIsOwnedSwapchainContext_Dx12FG(ffxContext* context);
 +bool ffxOwnedSwapchainContextIsCurrent_Dx12FG(ffxContext* context);
++
++struct IDXGISwapChain;
++void ffxBeginUiPacketSession_Dx12FG(IDXGISwapChain* carrier);
++void ffxClearUiPacket_Dx12FG(IDXGISwapChain* carrier, const char* reason, bool preserveFrame = false);
+diff --git a/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h b/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h
+new file mode 100644
+index 00000000..88ebd07c
+--- /dev/null
++++ b/OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h
+@@ -0,0 +1,68 @@
++#pragma once
++
++// OXP3 GTA FFX UI bridge, ABI v1. MIT; copyright (c) 2026 Grippy98.
++// Producer: OptiScaler. Consumer: the maintained GTA RenoDX addon.
++#include <unknwn.h>
++#include <cstdint>
++
++inline constexpr uint32_t OXP3_FFX_UI_MAGIC = 0x4955584f; // little-endian "OXUI"
++inline constexpr uint32_t OXP3_FFX_UI_VERSION = 1;
++inline constexpr uint32_t OXP3_FFX_UI_PREMULTIPLIED = 1;
++inline constexpr uint32_t OXP3_FFX_UI_DOUBLE_BUFFERED = 2;
++
++// IDXGIObject::SetPrivateDataInterface property; GetPrivateData returns an AddRef'd IUnknown.
++inline constexpr GUID OXP3_FFX_UI_PACKET_PROPERTY =
++    {0x8e5b201f, 0x8e48, 0x49c4, {0xb3,0x51,0x88,0x55,0xd3,0xe5,0x42,0x96}};
++inline constexpr GUID IID_IOxp3FfxUiPacket =
++    {0xb53df145, 0xdc25, 0x4c89, {0x9b,0x86,0x3e,0xd2,0x41,0x87,0x65,0x61}};
++
++#pragma pack(push, 8)
++struct Oxp3FfxUiSnapshot
++{
++    uint32_t magic;
++    uint32_t version;
++    uint32_t byteSize;
++    uint32_t active; // live nonnull UI registration; independent of interpolationEnabled
++    uint64_t session;
++    uint64_t frameId; // FFX's frame ID, not Opti's resettable local frame count
++    uint32_t uiFlags;
++    uint32_t ffxState;
++    uint32_t ffxFormat;
++    uint32_t ffxType;
++    uint32_t width; // actual native UI resource width/height
++    uint32_t height;
++    uint32_t mipCount;
++    uint32_t nativeDxgiFormat;
++    int32_t rectLeft;
++    int32_t rectTop;
++    uint32_t rectWidth;
++    uint32_t rectHeight;
++    uint32_t declaredWidth;
++    uint32_t declaredHeight;
++    uint32_t declaredFlags;
++    uint32_t declaredUsage;
++    uint32_t d3d12State; // converted native state; ffxState is a DIFFERENT enum
++    uint32_t interpolationEnabled; // latest FFX request; false can still require UI on the real frame
++    uint64_t publicationId; // monotonic UI-registration serial, independent of repeated/reset FFX frame IDs
++};
++#pragma pack(pop)
++static_assert(sizeof(Oxp3FfxUiSnapshot) == 112);
++
++struct __declspec(uuid("b53df145-dc25-4c89-9b86-3ed241876561")) IOxp3FfxUiPacket : IUnknown
++{
++    virtual HRESULT STDMETHODCALLTYPE GetSnapshot(Oxp3FfxUiSnapshot* output, uint32_t outputBytes) = 0;
++    // Successful Acquire calls return a caller-owned QI reference; no borrowed pointer crosses this ABI.
++    virtual HRESULT STDMETHODCALLTYPE AcquireUiResource(REFIID iid, void** output) = 0;
++    virtual HRESULT STDMETHODCALLTYPE AcquireCommandQueue(REFIID iid, void** output) = 0;
++};
++
++// AcquireUiResource returns the original API-visible resource. The consumer must
++// resolve a native resource identity (e.g. supported ReShade unwrap QI) before
++// querying Reno tracking; pointer equality across wrappers must not be assumed.
++// Packet metadata is immutable. It owns the registered UI allocation and the native
++// game/presentation queue, never the swapchain. Content validity is UntilPresent:
++// the consumer must use the newest session/publicationId once on the same native queue,
++// before forwarding that real-frame Present to XeFG. A COM reference alone does
++// not reserve UI contents. Consumers must reject stale/repeated/mismatched packets.
++// Producer clears the property on UI null, actual FFX context destruction and physical
++// swapchain teardown. Transient SDK deactivation/paused interpolation is not UI teardown. Retained consumer GPU leases must retire via queue fences.
 diff --git a/OptiScaler/inputs/FfxApi_Dx12.cpp b/OptiScaler/inputs/FfxApi_Dx12.cpp
 index cff0d085..4c966472 100644
 --- a/OptiScaler/inputs/FfxApi_Dx12.cpp

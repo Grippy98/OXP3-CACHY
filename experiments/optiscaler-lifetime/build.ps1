@@ -20,6 +20,8 @@ git -C $source apply $patch
 if ($LASTEXITCODE -ne 0) { throw 'Source patch application failed.' }
 git -C $source diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Source patch whitespace check failed.' }
+$header = Join-Path $source 'OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h'
+if ((Get-FileHash $header -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.ui_packet_header_sha256) { throw 'UI packet ABI header mismatch.' }
 
 # Skip upstream packaging and its vendor-runtime copying. This artifact contains only this DLL and provenance.
 # Generate the two normal resource headers ourselves so the runtime version identifies the experimental patch.
@@ -29,7 +31,7 @@ $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
 $ns.AddNamespace('m', 'http://schemas.microsoft.com/developer/msbuild/2003')
 foreach ($node in $xml.SelectNodes('//m:PreBuildEvent/m:Command | //m:PostBuildEvent/m:Command', $ns)) { $node.InnerText = '' }
 $xml.Save($project)
-$label = '273e8d44-oxp3-uiprobe-' + $pin.patch_sha256.Substring(0, 8)
+$label = '273e8d44-oxp3-uipacket-' + $pin.patch_sha256.Substring(0, 8)
 [IO.File]::WriteAllText((Join-Path $source 'OptiScaler/resource_build_commit.h'), '#define VER_BUILD_COMMIT "' + $label + '"' + "`n", [Text.Encoding]::ASCII)
 [IO.File]::WriteAllText((Join-Path $source 'OptiScaler/resource_build_date.h'), '#define VER_BUILD_DATE "OXP3 experimental"' + "`n", [Text.Encoding]::ASCII)
 
@@ -52,6 +54,7 @@ $record = [ordered]@{
     source_repository = $pin.repository
     source_commit = $pin.commit
     patch_sha256 = $pin.patch_sha256
+    ui_packet_header_sha256 = $pin.ui_packet_header_sha256
     version_label = $label
     dll_sha256 = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
     visual_studio_version = $vs.installationVersion

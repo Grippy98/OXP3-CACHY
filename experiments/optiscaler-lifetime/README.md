@@ -223,3 +223,57 @@ separate until these metadata and clone-route questions are resolved.
 
 - [Pinned FFX resource metadata ABI](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_api_types.h)
 - [Pinned FFX UI alpha/double-buffer flag contract](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_framegeneration.h)
+
+## Maintained UI packet producer
+
+The metadata probe identified a real full-size BGRA8 UI resource with FFX flags3
+(premultiplied alpha plus internal UI double-buffering) and FFX state0xC, which
+maps to native D3D12 shader-read state0xC0. That BGRA8 target qualifies for GTA's
+RenoDX FP16 resource-view clone rule. Sampling the original through native Opti
+helper objects therefore cannot be assumed to sample the rendered clone.
+
+This follow-up provides a versioned COM packet for a matching maintained RenoDX
+GTA consumer. The producer does not draw, copy, color-convert, or SDK-tag UI. It
+retains the existing UI-probe logs and the tested native XeFG/ownership changes.
+
+The packet is attached with SetPrivateDataInterface on the live SDK swapchain,
+which is the native object available to the outer ReShade/Reno swapchain. Its
+private property GUID and IUnknown interface IID are distinct. The fixed112-byte
+POD metadata carries magic/version/size, a session epoch, original FFX frame ID,
+independent monotonic publicationId, alpha/buffering flags, both FFX and native
+state enums, actual/declared size/format metadata, and generation rectangle.
+Successful resource/queue acquire methods return caller-owned QI references.
+The packet owns the original API-visible UI resource and native direct queue;
+it owns no swapchain, avoiding a private-data reference cycle. Consumers must
+unwrap resource identity before accessing Reno's own tracking/clone APIs.
+
+Publication occurs during existing UI registration, before the game's outer
+ReShade OnPresent callback. The frame metadata comes from FFX Configure before
+Opti resets its own counters. A registered UI packet remains composition-active
+when interpolation is paused or disabled; interpolationEnabled is separate.
+Null UI clears the property while preserving same-frame re-registration data.
+Actual FFX context destruction and physical swapchain release/replacement close
+the session before releasing the carrier. SDK pause/Deactivate is not UI teardown.
+
+The producer serializes attachment and lifecycle clearing. A publisher snapshots
+its epoch/frame revision, owns the SDK's original presentation queue at the existing FFX callback entry
+through a checked RTTI path and non-virtual owned accessor, and
+reserves its publication serial before delayed COM queries; it never dereferences
+the FG feature after those queries.
+Commit rejects a changed session, frame, carrier, or newer UI registration.
+Error-path clearing repeats the epoch/serial checks before touching the carrier.
+Frame updates cannot revive a carrier closed by teardown. Packet methods never
+take the producer mutex, and the only cross-DLL data is fixed POD and COM methods.
+
+FFX flag3 requires ordering at Present, not merely COM lifetime. The consumer must
+validate the newest session/publication, native queue/device identity, formats,
+rectangle, and existing live clone. It must snapshot/read that clone on the same
+native game queue after game UI writes and before reuse; any GPU leases must
+retire on checked fence completion. A COM AddRef keeps the allocation alive,
+not its pixel contents. The original UI allocation is never read back to the CPU.
+
+The paired consumer performs any clone-aware HDR composition in Reno's existing
+final pass. This producer alone is not a HUD fix, and neither paired visual
+correctness nor color/alpha assumptions are qualified until the controlled canary.
+The shared header and actual COM implementation passed compile-only checks with
+the existing Windows cross toolchain; full MSVC CI and runtime tests remain.
