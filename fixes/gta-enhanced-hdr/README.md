@@ -1,6 +1,6 @@
 # GTA V Enhanced HDR
 
-**HDR with XeSS upscaling works in short Story Mode tests; frame generation remains unqualified.** The current profile reached gameplay on two cold starts using the official vkd3d-proton 3.1 Core, private Mesa 26.3 and the private Gamescope WSI candidate. The owner reported artifacting/flickering after enabling native FSR frame generation. Intel XeFG testing progressed past swapchain adoption but then exposed a CPU command-list interface mismatch; its native-interface correction is awaiting a hardware test. Keep frame generation off for this HDR profile.
+**HDR with XeSS upscaling works in short Story Mode tests; keep frame generation off.** The current profile reached gameplay on two cold starts using the official vkd3d-proton 3.1 Core, private Mesa 26.3 and the private Gamescope WSI candidate. Experimental Intel XeFG now briefly generates frames, but color corruption and a crash prevent combined HDR/FG qualification.
 
 RenoDX adds HDR to the tested PC build; this does not enable a native Rockstar HDR option. The private WSI backport remains a candidate: its necessity has not been isolated, and this profile has not yet been compared successfully with the stock WSI layer.
 
@@ -67,7 +67,7 @@ ShowPresetTransitionMessage=0
 
 The Core-only profile retained the original system32 D3D12 loader and loaded the official 3.1 app-directory Core. ReShade/RenoDX initialized on D3D12, Gamescope reported application HDR, and fresh XeSS SR 2.0.2 initialization plus Story Mode gameplay were observed. The owner reported that it worked; a second cold start returned to Story Mode after frame generation was restored to Off. This is short-session HDR/SR validation, with no long-play or controlled-performance claim.
 
-**Combined HDR and frame generation remains unresolved.** Native FSR FG produced owner-reported flickering/artifacting and lost application-HDR feedback after replacing the presentation chain. An experimental Intel XeFG change successfully reused the existing ReShade presentation chain, then failed with a CPU access violation in native command-list submission. A separate correction normalizing only XeFG SDK device, queue and command-list inputs is awaiting a hardware test; it is not part of the working profile. See the [implementation diagnosis](WRITEUP.md#frame-generation-scope).
+**Combined HDR and frame generation remains unresolved.** Native FSR FG flickered and lost application-HDR feedback. The experimental Intel XeFG correction briefly reported successful interpolation with two frames sent to the presenter, followed by owner-reported oversaturation and an OptiScaler legacy-menu crash. Failed duplicate resizes also left RenoDX tracking unregistered, providing a concrete color-corruption lead without identifying who held the backbuffer references. A narrowly scoped retry is at the HDR menu; Story Mode validation is pending. See the [implementation diagnosis and test limits](WRITEUP.md#frame-generation-scope). None of these experiments changes the FG-off installation recipe.
 
 The accepted SDR manual-HUD workaround predates this Core update and is not qualified for HDR. A final HDR10 backbuffer alone does not establish compatible HUD-less/UI inputs.
 
