@@ -26,7 +26,9 @@ jobs:
           persist-credentials: false
       - name: Keep source line endings deterministic
         shell: pwsh
-        run: git config --global core.autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - name: Check out the exact OptiScaler base and pinned submodules
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

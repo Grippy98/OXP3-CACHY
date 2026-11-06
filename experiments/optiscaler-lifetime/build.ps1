@@ -21,7 +21,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Source patch application failed.' }
 git -C $source diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Source patch whitespace check failed.' }
 $header = Join-Path $source 'OptiScaler/inputs/FG/oxp3_ffx_ui_packet.h'
-if ((Get-FileHash $header -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.ui_packet_header_sha256) { throw 'UI packet ABI header mismatch.' }
+$headerHash = (Get-FileHash $header -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($headerHash -ne $pin.ui_packet_header_sha256) { throw "UI packet ABI header mismatch: actual $headerHash" }
 
 # Skip upstream packaging and its vendor-runtime copying. This artifact contains only this DLL and provenance.
 # Generate the two normal resource headers ourselves so the runtime version identifies the experimental patch.
