@@ -81,6 +81,10 @@ Copy-Item $patch (Join-Path $artifact 'source.patch')
 Copy-Item (Join-Path $source 'LICENSE') (Join-Path $artifact 'LICENSE')
 Copy-Item (Join-Path $recipe 'README.md') (Join-Path $artifact 'SOURCE.md')
 Copy-Item (Join-Path $recipe 'tools.json') (Join-Path $artifact 'tools.json')
+Copy-Item (Join-Path $recipe 'source.json') (Join-Path $artifact 'source.json')
+if (Test-Path (Join-Path $recipe 'licenses')) {
+    Copy-Item (Join-Path $recipe 'licenses') (Join-Path $artifact 'licenses') -Recurse -Force
+}
 $record = [ordered]@{
     source_repository = $pin.repository
     source_commit = $pin.commit
