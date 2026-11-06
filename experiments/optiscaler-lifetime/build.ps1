@@ -29,7 +29,7 @@ $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
 $ns.AddNamespace('m', 'http://schemas.microsoft.com/developer/msbuild/2003')
 foreach ($node in $xml.SelectNodes('//m:PreBuildEvent/m:Command | //m:PostBuildEvent/m:Command', $ns)) { $node.InnerText = '' }
 $xml.Save($project)
-$label = '273e8d44-oxp3-native-' + $pin.patch_sha256.Substring(0, 8)
+$label = '273e8d44-oxp3-uiprobe-' + $pin.patch_sha256.Substring(0, 8)
 [IO.File]::WriteAllText((Join-Path $source 'OptiScaler/resource_build_commit.h'), '#define VER_BUILD_COMMIT "' + $label + '"' + "`n", [Text.Encoding]::ASCII)
 [IO.File]::WriteAllText((Join-Path $source 'OptiScaler/resource_build_date.h'), '#define VER_BUILD_DATE "OXP3 experimental"' + "`n", [Text.Encoding]::ASCII)
 

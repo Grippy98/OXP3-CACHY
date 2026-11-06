@@ -179,3 +179,47 @@ multiple presented frames. No generated-frame or visual success is claimed yet.
 - [ReShade 6.8 device unwrap and proxy allocations](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_device.cpp)
 - [ReShade 6.8 queue unwraps lists before native submission](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d12/d3d12_command_queue.cpp)
 - [vkd3d-proton 3.1 native command-list checks and query-reset submission](https://github.com/HansKristian-Work/vkd3d-proton/blob/v3.1/libs/vkd3d/command.c)
+
+## Bounded UI metadata probe
+
+The native-boundary DLL subsequently presented actual generated frames: the SDK
+reported successful two-frame presentation with interpolation enabled. A guarded
+no-op resize setting preserved RenoDX tracking/HDR, and the modern overlay menu
+avoided the separate legacy ImGui null-context crash. The remaining owner-visible
+issue is a completely missing HUD while frame generation is enabled. The working
+configuration still disables separate UI capture; this probe does not alter that
+behavior or attempt another composition preset.
+
+This build adds only observational `UI_PROBE` logs to the existing FFX UI
+registration paths. Across the process, at most sixteen distinct resource/flags
+pairs are examined. Each records:
+
+- Declared FFX resource type, format, dimensions, flags, usage and state, plus
+  UI premultiplied-alpha/double-buffer flags and current frame/interpolation rect.
+- Actual ID3D12Resource format/dimensions/sample/usage metadata from GetDesc.
+- FFX backend and State device pointers, their native identities, and the UI
+  resource's owning-device identity. The feature's protected Device field is not
+  exposed or changed.
+- Current SDK backbuffer index and actual resource format/dimensions. Temporary
+  GetBuffer/QI references are released before the intercepted call returns.
+
+There is no pixel readback, live debug attachment, resource state transition,
+clone creation/activation, UI retention after the call, shader change, SDK UI
+resource tagging change, or rendering behavior change. Existing DisableUI and
+other configuration paths run as before. The limit mutex is released before any
+COM query/logging, and all probe COM references are local owned temporaries.
+
+The resource-description ABI and both UI flag bits are checked against the exact
+OptiScaler SDK submodule pin
+`c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`; compile-time assertions verify the
+flag values against the headers actually used by CI.
+
+A resource's native format alone does not identify its transfer function or prove
+which RenoDX clone game rendering used. RenoDX's view-clone routing tracks a
+separate resource/descriptor graph, and no stable native COM clone-lookup ABI was
+established. The probe deliberately avoids interpreting RenoDX shared C++ data or
+creating extra views to induce cloning. UI conversion/composition design remains
+separate until these metadata and clone-route questions are resolved.
+
+- [Pinned FFX resource metadata ABI](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_api_types.h)
+- [Pinned FFX UI alpha/double-buffer flag contract](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/ffx-api/include/ffx_api/ffx_framegeneration.h)
