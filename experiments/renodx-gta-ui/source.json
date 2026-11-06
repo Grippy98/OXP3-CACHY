@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/clshortfuse/renodx",
+  "commit": "bc0ead39917634e95c534f7e8cfb59ab82880747",
+  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": "Unmodified pinned-source build control. The HUD consumer patch is not included yet. No runtime qualification."
+}

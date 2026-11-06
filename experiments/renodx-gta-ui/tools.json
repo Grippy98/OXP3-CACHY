@@ -1,0 +1,17 @@
+{
+  "dxc": {
+    "version": "1.9.2602",
+    "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
+    "sha256": "a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e"
+  },
+  "slang": {
+    "version": "2026.14.1",
+    "url": "https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.zip",
+    "sha256": "5ed0a59d650a0af0aca45d5db4e083b3d8fb5cea05748747dd95dfbe9c580658"
+  },
+  "glslang": {
+    "version": "16.5.0",
+    "url": "https://github.com/KhronosGroup/glslang/releases/download/16.5.0/glslang-16.5.0-windows-x86_64-release.zip",
+    "sha256": "06b71298b750268c127f2ee7ae0ef7525e2068120c6c8a3a08b2f58ca6f325ce"
+  }
+}
