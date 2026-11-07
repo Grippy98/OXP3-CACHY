@@ -38,7 +38,7 @@ See [installation and rollback](docs/INSTALLATION.md) for prerequisites, argumen
 | [LG TV EDID recovery](fixes/lg-c5-edid/README.md) | Saved-EDID workaround and kernel recovery patch | Hardware tested workaround/patch; explicit capture required |
 | [Built-in panel refresh](fixes/internal-panel-refresh/README.md) | Lua profile, accepted zero-lead runtime and kernel patches | Full setup hardware tested; menu installs the profile only |
 | [Moonlight client](fixes/moonlight-client/README.md) | Pinned fork with DualSense Bluetooth waveforms, Native display options, network bitrate presets and Intel import prototype | Installed; gameplay waveforms and adaptive-trigger output verified |
-| [Community XeSS XMX / XeFG](fixes/xess-xmx-community/README.md) | Pinned private runtime, compiler helpers and per-game SDR/HDR launch profiles | Short 1920×1200 HDR/XeSS/XeFG/HUD test accepted; pinned pair available |
+| [Community XeSS XMX / XeFG](fixes/xess-xmx-community/README.md) | Pinned private runtime, compiler helpers and per-game SDR/HDR launch profiles | GTA and Spider-Man short HDR/XeFG tests accepted; manual profiles |
 | [GTA V Enhanced HDR](fixes/gta-enhanced-hdr/README.md) | RenoDX HDR10, checked per-game Core installer and private WSI candidate | Short 1920×1200 HDR/XeFG/HUD test accepted; broader modes unqualified |
 | [External HDMI VRR](fixes/external-display-vrr/README.md) | Opt-in Intel PCON / FreeSync prototype and build recipes | Experimental: 1080p SDR worked at 60/80 FPS; 4K VRR unresolved |
 | [HDMI-CEC](fixes/hdmi-cec/README.md) | Read-only transport probe and limitations | No usable transport on the tested adapters |

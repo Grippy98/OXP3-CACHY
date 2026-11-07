@@ -1,5 +1,13 @@
 # XeSS XMX community integration: scope and validation
 
+## Spider-Man Remastered: native HDR and XeFG
+
+The separate [Spider-Man profile](spiderman-remastered/README.md) uses official OptiScaler 0.9.4 with native XeSS SR 2.0.2.68, XeFG 1.3.1.78, XeLL 1.3.2.10, the private 20261104/Mesa 26.3 runtime and Proton 11. The original game FidelityFX DLL stays unchanged. The owner accepted normal menus, colors and gameplay on the built-in 1920×1200 / 144 Hz screen with native HDR and XeFG configured.
+
+A preceding direct FSR-FG provider replacement returned successful two-frame SDK status but broke colors and menus. Its source omitted execution of the game's non-null presentation callback. That is the leading diagnosis, not an isolated callback-only proof. The failed trial was rolled back before installing OptiScaler, whose FSR input path invokes the native callback. The accepted configuration disables auxiliary UI/HUD-less SDK composition and manual blending, letting the game render its HDR/UI into the complete backbuffer first. [The writeup](spiderman-remastered/WRITEUP.md) records this implementation distinction and [the pins](spiderman-remastered/SOURCE.json) record the exact inputs.
+
+Official 0.9.4 does not log SDK presented-frame counts in this route. Successful enablement, input tags and continuous dispatch plus owner acceptance qualify the short compatibility result; they do not establish a measured 2× output gain. Longer play, repeat lifecycle changes and other display modes remain unqualified. GTA's custom RenoDX bridge is a separate implementation.
+
 ## Current GTA combination and qualification
 
 The current runtime pins [xess-xmx-linux release 20261104](https://github.com/HHHHanasak1/xess-xmx-linux/releases/tag/20261104), source `a12948e247dfe43646cdb1409d0f2752633f7883`, archive SHA256 `4d97b77e44f22235a567d0b5317421e65566089dc08a6a0caf9fa16549433173`. The current HDR/SR profile explicitly selects the package's private **Mesa 26.3.0-rc3** using `MESA=26.3`; the historical SDR FG/HUD profile used 26.1.2 with `MESA=26.1`. No system Mesa package is replaced.

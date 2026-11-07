@@ -6,10 +6,13 @@ The current GTA setup combines [xess-xmx-linux 20261104](https://github.com/HHHH
 
 ## Current results
 
+[Spider-Man Remastered](spiderman-remastered/README.md) now has a separate short owner-accepted XeFG profile: official OptiScaler 0.9.4, native XeSS SR, native HDR and the original game FidelityFX library at 1920×1200. Menus, colors and gameplay were accepted; no measured 2× output or long-play claim is made.
+
 **HDR + XeSS SR + XeFG + HUD received short Story Mode visual acceptance at fixed 1920×1200.** After the paired OptiScaler `126edef` and RenoDX `cbc474` builds were installed on November 5, the owner reported normal output and that everything worked, including frame generation. Use the [HUD bridge guide](../gta-enhanced-hdr/hud-bridge/README.md) for the exact paired builds and settings. The FG-Off HDR/SR baseline also passed two short Story cold starts. Long-play, resizing, repeated context changes, other display modes and controlled performance remain unqualified; this visual pass does not establish a measured frame-rate multiplier or latency result.
 
 | Game/configuration | Established | Still pending |
 | --- | --- | --- |
+| Spider-Man Remastered, official OptiScaler 0.9.4 | Owner accepted normal menus, colors and gameplay with native HDR/XeSS SR and configured XeFG at 1920×1200; enablement, tags, dispatch and game presentation callbacks observed. | Numeric presented-frame count, controlled performance, long-play, repeated lifecycle and other output modes. |
 | GTA HDR + XeSS SR, FG Off | ReShade/RenoDX HDR active, fresh SR 2.0.2 initialization and Story gameplay on two short Core-only 3.1 cold starts. | Long-play, controlled performance, necessity of private WSI/Mesa selection, and stock-WSI comparison. |
 | GTA HDR + XeFG, earlier fixed-resolution diagnostic | SDK reported successful two-frame interpolation and the owner accepted normal-color Story Mode, but this older build omitted the minimap and phone. | Historical diagnostic only; use the paired HUD bridge below. Its counters do not qualify the later pair. |
 | GTA HDR + XeSS SR + XeFG + paired Reno HUD bridge | Owner accepted normal Story gameplay, colors and HUD with frame generation at fixed 1920×1200 using pair `126edef`/`cbc474`. Build/header checks and 15 independent CPU math tests also pass. | Long-play, controlled motion/artifact and performance comparisons, actual base/presented FPS split, repeated contexts, resize and other display modes. |

@@ -1,0 +1,141 @@
+{
+  "status": "Owner-accepted short 1920x1200 HDR/menu/gameplay test with XeFG configured; numeric output multiplier and long-play unqualified",
+  "game": {
+    "name": "Marvel's Spider-Man Remastered",
+    "steam_appid": 1817070,
+    "steam_build": 23986256,
+    "exe": "Spider-Man.exe",
+    "display": [
+      1920,
+      1200,
+      144
+    ],
+    "native_hdr": true,
+    "proton_major": 11
+  },
+  "optiscaler": {
+    "repository": "https://github.com/optiscaler/OptiScaler",
+    "release": "v0.9.4",
+    "source_commit": "7534ad00bf9e590eedb99e8dd9fd8c89dae3654f",
+    "archive": "Optiscaler_0.9.4-final.20260718._MM.7z",
+    "archive_url": "https://github.com/optiscaler/OptiScaler/releases/download/v0.9.4/Optiscaler_0.9.4-final.20260718._MM.7z",
+    "archive_sha256": "575cb4df866116093df75af607e37fd70e10f5163e0f23fd5c804142e80ef0ad",
+    "dll_sha256": "fbfb6676b829dad7e020fb830586a16aa0ec6add78016db48ef12e2ae1803231",
+    "installed_filename": "dxgi.dll",
+    "source_patch": null,
+    "spider_quirk": "DisableDxgiSpoofing only in exact 0.9.4 source; later FSRFGHudlessMismatchFixup not applied here",
+    "license": "GPL-3.0; retained in ../licenses/OptiScaler-GPL-3.0.txt and official archive"
+  },
+  "fakenvapi": {
+    "source": "Matching official OptiScaler 0.9.4 archive",
+    "dll_sha256": "373e73dc06e2d66e90083fde3bc99ef5c1ed0bef98d1f7eda56c8b073269c3f1",
+    "installed_filenames": [
+      "fakenvapi.dll",
+      "fakenvapi.ini"
+    ],
+    "notices": "Retain bundled archive component licenses in private package",
+    "ini_sha256": "a4bfa3ec7b4badd93ae5e1ad74a582238082d871f54f38f68e7d9fb6384ce772"
+  },
+  "intel_sdk": {
+    "release": "3.0.2",
+    "url": "https://github.com/intel/xess/releases/download/v3.0.2/XeSS_SDK_3.0.2.zip",
+    "archive_sha256": "88b8a373f30e33f3558a77a93e634f11b8132fc3047ea1a8edeead32b8471990",
+    "sr": "2.0.2.68",
+    "fg": "1.3.1.78",
+    "xell": "1.3.2.10",
+    "deployed_files": [
+      "libxess.dll",
+      "libxess_fg.dll",
+      "libxell.dll"
+    ],
+    "license": "Intel SDK license and third-party notices retained in private package; no redistribution here",
+    "dll_sha256": {
+      "libxess.dll": "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7",
+      "libxess_fg.dll": "ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27",
+      "libxell.dll": "d2030dcd694fda8f2ec7e044b13e6db8f0b56d4ba9113a5efad334e3f3ded8c7"
+    }
+  },
+  "community_runtime": {
+    "repository": "https://github.com/HHHHanasak1/xess-xmx-linux",
+    "release": "20261104",
+    "source_commit": "a12948e247dfe43646cdb1409d0f2752633f7883",
+    "archive_sha256": "4d97b77e44f22235a567d0b5317421e65566089dc08a6a0caf9fa16549433173",
+    "mesa": "private 26.3.0-rc3 selected with MESA=26.3",
+    "scope": "Game child environment; original system Mesa and shared Proton retained"
+  },
+  "game_library": {
+    "filename": "amd_fidelityfx_dx12.dll",
+    "sha256": "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6",
+    "treatment": "Original game file retained unchanged; no modular AMD replacements deployed"
+  },
+  "profile": {
+    "file": "profile.ini",
+    "native_sr": "Native XeSS; EnableXeSSInputs=false",
+    "framegen_input": "fsrfg",
+    "framegen_output": "xefg",
+    "requested_interpolation_count": 1,
+    "requested_multiplier": 2,
+    "auxiliary_UI": false,
+    "auxiliary_HUDless": false,
+    "manual_UI_blend": false,
+    "SDK_UI_composition": false,
+    "GPU_spoofing": false,
+    "overlay": "Modern overlay",
+    "reshade": false,
+    "steam_override": "dxgi=n,b",
+    "quiet_diagnostics": "launch.sh and quiet-logs.py before next launch; OXP3_SPIDER_DEBUG=1 opts out"
+  },
+  "deployment": {
+    "game_root_files": [
+      "dxgi.dll",
+      "OptiScaler.ini",
+      "fakenvapi.dll",
+      "fakenvapi.ini",
+      "libxess.dll",
+      "libxess_fg.dll",
+      "libxell.dll"
+    ],
+    "original_existing_managed_files": [
+      "libxess.dll"
+    ],
+    "private_helper_home_relative": ".local/lib/oxp3-spiderman-xefg",
+    "private_entrypoint_home_relative": ".local/bin/oxp3-spiderman-xefg",
+    "backup_pointer_home_relative": ".local/state/onex3-fixes/spiderman-remastered/current-optiscaler-backup.txt",
+    "backup_manifest": "manifest.json with target, existed, backup, original_sha256, installed_sha256",
+    "rollback": "Close game; restore/remove only destinations whose current hash matches installed_sha256 and whose original state is recorded; preserve later changes for manual review",
+    "game_saves_or_prefix_registry_changes": false,
+    "shared_proton_or_system_mesa_changes": false
+  },
+  "validation": {
+    "owner": "Menus, colors and gameplay look normal",
+    "HDR": "Gamescope application HDR active during accepted run",
+    "runtime": "Successful XeFG SetEnabled; successful depth/motion-vector tags; continuous Dispatch OK and game presentation callback activity",
+    "numeric_presented_frame_count": "Not measured in official OptiScaler 0.9.4 accepted run",
+    "performance": "Not benchmarked; configured 2x is not a measured output gain",
+    "unqualified": [
+      "long-play",
+      "repeated cold starts",
+      "repeated FG toggles",
+      "resize/docking",
+      "other resolutions",
+      "controlled HUD/motion artifacts",
+      "base/presented FPS split",
+      "latency",
+      "post-cleanup launch"
+    ],
+    "packaged_helpers": "Quiet logging helper passed log-only edit/idempotence checks; deployed wrapper child-environment probe retained Mesa 26.3, XESS_FG=2, FFX_XEFG_MULT=2, disabled present_wait2/descriptor_buffer and absent DISABLE_GAMESCOPE_WSI. Accepted running game uninterrupted."
+  },
+  "rejected_provider_trial": {
+    "source": "Community 20261104 ffxfg provider",
+    "scope": "Per-game native XeSS SR plus FSR-FG replacement",
+    "result": "Successful SDK two-frame status, but wrong colors and missing menu items; fully rolled back before accepted OptiScaler run",
+    "likely_cause": "Game supplied native presentation callback which provider logs but does not invoke; causality not isolated with a callback-only patch",
+    "qualification": "Counters from this failed route do not qualify accepted OptiScaler configuration"
+  },
+  "primary_references": [
+    "https://github.com/optiscaler/OptiScaler/wiki/Marvels-Spider%E2%80%90Man-Remastered",
+    "https://github.com/optiscaler/OptiScaler/blob/7534ad00bf9e590eedb99e8dd9fd8c89dae3654f/OptiScaler/inputs/FG/FfxApi_Dx12_FG.cpp",
+    "https://github.com/optiscaler/OptiScaler/blob/7534ad00bf9e590eedb99e8dd9fd8c89dae3654f/OptiScaler/misc/Quirks.h",
+    "https://github.com/HHHHanasak1/xess-xmx-linux/blob/20261104/ffxfg/ffx_xefg.cpp"
+  ]
+}
